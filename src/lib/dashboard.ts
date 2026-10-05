@@ -2,7 +2,7 @@
 //
 // 分层约定（同 board-filters）：分组是不含 IO、不读系统时钟的纯函数，
 // 「今天」由调用方传入，便于单测；数据库查询单独成函数。
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { db } from "@/db";
 import { projects, tasks, teamMembers, teams } from "@/db/schema";
 
@@ -103,15 +103,9 @@ export function groupMyTasks(items: MyTask[], today: string): TaskGroup[] {
 }
 
 // 取「当前用户可访问的全部项目里，指派给他且未完成」的任务。
-// 访问权口径与 listMyProjects 一致：先取我所在的团队，再按团队过滤项目。
+// 当前成员资格与任务在同一条 SQL 中检查，避免两次查询间退组后仍返回旧团队任务。
+// 工作台仅列活跃项目；已归档任务保留在项目历史中。已指派的子任务也是个人待办。
 export async function getMyOpenTasks(actorId: string): Promise<MyTask[]> {
-  const memberships = await db
-    .select({ teamId: teamMembers.teamId })
-    .from(teamMembers)
-    .where(eq(teamMembers.userId, actorId));
-  const teamIds = memberships.map((m) => m.teamId);
-  if (teamIds.length === 0) return [];
-
   return db
     .select({
       id: tasks.id,
@@ -126,11 +120,12 @@ export async function getMyOpenTasks(actorId: string): Promise<MyTask[]> {
     .from(tasks)
     .innerJoin(projects, eq(tasks.projectId, projects.id))
     .innerJoin(teams, eq(projects.teamId, teams.id))
+    .innerJoin(teamMembers, and(eq(teamMembers.teamId, projects.teamId), eq(teamMembers.userId, actorId)))
     .where(
       and(
         eq(tasks.assigneeId, actorId),
         ne(tasks.status, "done"),
-        inArray(projects.teamId, teamIds),
+        eq(projects.status, "active"),
       ),
     );
 }

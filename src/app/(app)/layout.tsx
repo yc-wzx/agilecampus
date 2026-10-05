@@ -47,11 +47,11 @@ export default async function AppLayout({
           </nav>
         </div>
         <details className="relative shrink-0">
-          <summary className="flex cursor-pointer list-none items-center gap-2 whitespace-nowrap rounded-field px-2 py-1.5 text-sm text-ink-soft transition-colors hover:bg-primary-soft hover:text-primary [&::-webkit-details-marker]:hidden">
+          <summary aria-label="账户菜单" className="flex cursor-pointer list-none items-center gap-2 whitespace-nowrap rounded-field px-2 py-1.5 text-sm text-ink-soft transition-colors hover:bg-primary-soft hover:text-primary [&::-webkit-details-marker]:hidden">
             <span className="grid h-6 w-6 place-items-center rounded-full bg-primary text-xs font-semibold text-white">
               {session.user.name?.slice(0, 1) ?? "?"}
             </span>
-            <span className="hidden sm:inline">{session.user.name}</span>
+            <span className="hidden max-w-40 truncate sm:inline">{session.user.name}</span>
           </summary>
           <div className="absolute right-0 z-30 mt-1 w-40 space-y-1 rounded-field border border-line bg-surface p-1 shadow-pop">
             <Link

@@ -36,13 +36,13 @@ function TaskRow({ task }: { task: MyTask }) {
   return (
     <li className="ac-card p-3">
       <Link
-        href={`/projects/${task.projectId}`}
-        className="font-medium text-ink hover:text-primary hover:underline"
+        href={`/projects/${task.projectId}?task=${task.id}`}
+        className="break-words font-medium text-ink hover:text-primary hover:underline"
       >
         {task.title}
       </Link>
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-faint">
-        <span>{task.teamName} · {task.projectName}</span>
+        <span className="min-w-0 break-words">{task.teamName} · {task.projectName}</span>
         <span>{task.dueDate ?? "未设置截止日期"}</span>
         <span className={`ac-badge ${STATUS_BADGE[task.status] ?? "bg-sunken text-ink-soft"}`}>
           {STATUS_LABEL[task.status] ?? task.status}
@@ -83,9 +83,10 @@ export default async function DashboardPage() {
     <main className="mx-auto max-w-3xl space-y-6 py-8">
       <header className="space-y-1">
         <h1 className="font-display text-2xl font-semibold text-ink">我的任务</h1>
-        <p className="text-sm text-ink-soft">
+        <p className="break-words text-sm text-ink-soft">
           你好，{session.user.name} · 今天 {today} · 待处理 {tasks.length} 项
         </p>
+        <p className="text-xs text-ink-faint">只显示活跃项目中指派给你的未完成任务，包含子任务。</p>
       </header>
 
       {tasks.length === 0 ? (
