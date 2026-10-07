@@ -8,39 +8,56 @@ import {
 } from "@/app/(app)/projects/[projectId]/actions";
 import {
   deleteTaskV1Action,
+  getTaskPanelContextAction,
+  setTaskBlockedAction,
   updateTaskV1Action,
 } from "@/app/(app)/projects/[projectId]/tasks/actions";
+import type { TaskSummary } from "@/contracts/p0-p2";
+import { newRequestId } from "@/lib/request-id";
 
 // C / P0：任务详情侧边栏。取代原先卡片里的居中弹窗 EditModal。
 //
-// 数据由服务端渲染时取好传进来（page.tsx 读 ?task= 调 getTaskPanelData），面板自己不取数：
-//   1. URL 的 ?task= 就是唯一真源，打开/关闭走 router.replace，刷新与后退行为自然正确。
-//   2. 挂载时无需在 effect 里 setState，也就没有级联渲染。
-//   3. 每次打开都是服务端重新鉴权后的结果，不信任客户端传来的任务内容。
+// 契约（定稿 9.2）：`TaskDetailPanel({projectId,taskId,onClose,onSaved})`——
+// **面板自己取数**：挂载时与 taskId 变化时各调一次 getTaskPanelContextAction，
+// 每次都重新鉴权，不信任调用方传来的任务内容；也因此谁都能只拿两个 id 把它挂起来。
+// `onSaved` 只在服务端确认写入成功后触发，给父级刷新看板卡片用。
+//
+// 打开/关闭仍由父级（看板）通过 URL 的 ?task= 驱动，面板不管这件事。
 //
 // 保存带回载入时拿到的 expectedUpdatedAt，由服务端在事务内锁行比对（定稿 §9.1）；
-// 只有服务端确认成功才通知外部刷新，CONFLICT 时如实提示并重取，绝不假装保存成功。
+// CONFLICT 时如实提示并**自己重取**，绝不假装保存成功。
 
 export type PanelOption = { id: string; name: string };
 
-/** page.tsx 取数后的结果。data 与 error 恰有一个非空。 */
+/**
+ * D 的来源反馈（来源条目挂到任务上）。只取展示需要的字段，且时间是 ISO 串——
+ * 客户端组件不该依赖服务端 lib 的行类型。
+ */
+export type TaskFeedbackItem = {
+  id: string;
+  decision: string;
+  comment: string;
+  milestoneTitle: string | null;
+  createdAt: string;
+};
+
+/** 面板渲染所需的全部数据。data 与 error 恰有一个非空。 */
 export type TaskPanelState = {
   taskId: string;
   data: TaskPanelData | null;
   error: string | null;
 };
 
-/** 浏览器不支持 randomUUID 时（非安全上下文）兜一个 v4，保证 requestId 始终可用。 */
-function newRequestId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
+/** getTaskPanelContextAction 的返回：详情 + 表单选项 + D 的来源反馈。 */
+export type TaskPanelContext = {
+  panel: TaskPanelData;
+  canWrite: boolean;
+  members: PanelOption[];
+  milestones: PanelOption[];
+  allTasks: { id: string; title: string }[];
+  allLabels: PanelOption[];
+  feedback: TaskFeedbackItem[];
+};
 
 function textOrNull(form: FormData, key: string): string | null {
   const raw = form.get(key);
@@ -57,27 +74,49 @@ const STATUS_LABEL: Record<TaskStatusValue, string> = {
 
 export function TaskDetailPanel({
   projectId,
-  state,
-  canWrite,
-  members,
-  milestones,
-  allTasks,
-  allLabels,
+  taskId,
   onClose,
-  onReload,
+  onSaved,
 }: {
   projectId: string;
-  state: TaskPanelState;
-  canWrite: boolean;
-  members: PanelOption[];
-  milestones: PanelOption[];
-  allTasks: { id: string; title: string }[];
-  allLabels: PanelOption[];
+  taskId: string;
   onClose: () => void;
-  /** 重新向服务端取数（router.refresh）。保存成功与版本冲突后都要调。 */
-  onReload: () => void;
+  /** 服务端确认写入成功后触发，供父级刷新看板。失败与冲突都不会触发。 */
+  onSaved?: () => void;
 }) {
-  // 本地副本让保存后能立刻回显新值，不必等整页刷新；服务端一到新数据就同步过来。
+  /** 自取数结果。切换 taskId 时旧数据不再匹配，由下面的 ctx 判定作废。 */
+  const [fetched, setFetched] = useState<TaskPanelContext | null>(null);
+  const [fetchFailed, setFetchFailed] = useState<string | null>(null);
+  /** 变化的只有它时重取（保存后、冲突后、以及手工重试）。 */
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    // 挂载与 taskId 切换都要重新鉴权取数——这是契约里写死的行为。
+    getTaskPanelContextAction(projectId, taskId).then((res) => {
+      if (cancelled) return;
+      if (!res.ok) {
+        setFetched(null);
+        setFetchFailed(res.error);
+        return;
+      }
+      setFetchFailed(null);
+      setFetched(res.data);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, taskId, nonce]);
+
+  const refetch = () => setNonce((n) => n + 1);
+
+  // 取回来的必须正是当前这个任务，否则就当还没到——切换任务的瞬间不会闪出上一个任务的详情。
+  const ctx = fetched && fetched.panel.task.id === taskId ? fetched : null;
+  const state: TaskPanelState = ctx
+    ? { taskId, data: ctx.panel, error: null }
+    : { taskId, data: null, error: fetchFailed };
+
+  // 本地副本让保存后能立刻回显新值，不必等重新取数；服务端一到新数据就同步过来。
   const [local, setLocal] = useState(state.data);
   const [prevData, setPrevData] = useState(state.data);
   // 渲染期同步而非 useEffect：这是「props 变了就调整派生 state」的既有写法（原深链逻辑同款），
@@ -86,6 +125,13 @@ export function TaskDetailPanel({
     setPrevData(state.data);
     setLocal(state.data);
   }
+
+  const canWrite = ctx?.canWrite ?? false;
+  const members = ctx?.members ?? [];
+  const milestones = ctx?.milestones ?? [];
+  const allTasks = ctx?.allTasks ?? [];
+  const allLabels = ctx?.allLabels ?? [];
+  const feedback = ctx?.feedback ?? [];
 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -114,7 +160,7 @@ export function TaskDetailPanel({
 
     setSaving(true);
     setSaveError(null);
-    const res = await updateTaskV1Action(projectId, state.taskId, {
+    const res = await updateTaskV1Action(projectId, taskId, {
       requestId: newRequestId(),
       // 原样回传服务端给的时间串，绝不在浏览器侧重新生成
       expectedUpdatedAt: local.task.updatedAt,
@@ -136,11 +182,12 @@ export function TaskDetailPanel({
     if (!res.ok) {
       setSaveError(res.error);
       // 版本对不上说明别人先改了：拉一份最新的，别让用户对着旧数据继续改
-      if (res.code === "CONFLICT") onReload();
+      if (res.code === "CONFLICT") refetch();
       return;
     }
     setLocal((current) => (current ? { ...current, task: res.data.task } : current));
-    onReload();
+    // 只有这里——服务端确认成功之后——才通知外部
+    onSaved?.();
   }
 
   async function handleDelete() {
@@ -148,23 +195,25 @@ export function TaskDetailPanel({
     if (!confirm("确认删除该任务？此操作不可恢复。")) return;
     setDeleting(true);
     setSaveError(null);
-    const res = await deleteTaskV1Action(projectId, state.taskId, {
+    const res = await deleteTaskV1Action(projectId, taskId, {
       requestId: newRequestId(),
       expectedUpdatedAt: local.task.updatedAt,
     });
     setDeleting(false);
     if (!res.ok) {
       setSaveError(res.error);
-      if (res.code === "CONFLICT") onReload();
+      if (res.code === "CONFLICT") refetch();
       return;
     }
-    onReload();
+    onSaved?.();
     onClose();
   }
 
+  /** 子面板（标签/依赖）保存成功：重取自己，并让父级刷新看板上的标签与依赖计数。 */
   function handleLabelDependencySaved() {
     setSaveError(null);
-    onReload();
+    refetch();
+    onSaved?.();
   }
 
   return (
@@ -201,11 +250,13 @@ export function TaskDetailPanel({
         {state.error && (
           <div className="space-y-2">
             <p className="text-sm text-high">{state.error}</p>
-            <button type="button" onClick={onReload} className="ac-btn-ghost text-sm">
+            <button type="button" onClick={refetch} className="ac-btn-ghost text-sm">
               重试
             </button>
           </div>
         )}
+
+        {!state.error && !state.data && <p className="text-sm text-ink-faint">载入任务详情…</p>}
 
         {task && local && (
           <div className="space-y-5">
@@ -236,7 +287,13 @@ export function TaskDetailPanel({
             </p>
 
             {canWrite && local.allowedActions.edit ? (
-              <form onSubmit={handleSave} className="space-y-2.5 border-t border-line pt-4">
+              <form
+                // 服务端每次回来的 updatedAt 都不同：用它当 key，冲突刷新后表单会重挂载，
+                // 输入框回到最新值，而不是留着用户手里那份过期内容。
+                key={task.updatedAt}
+                onSubmit={handleSave}
+                className="space-y-2.5 border-t border-line pt-4"
+              >
                 <Field label="标题">
                   <input name="title" defaultValue={task.title} required className="ac-field text-sm" />
                 </Field>
@@ -333,6 +390,38 @@ export function TaskDetailPanel({
             )}
 
             {canWrite && local.allowedActions.edit && (
+              <BlockControl
+                projectId={projectId}
+                taskId={task.id}
+                task={task}
+                onUpdated={(next) =>
+                  setLocal((current) => (current ? { ...current, task: next } : current))
+                }
+                onReload={() => {
+                  refetch();
+                  // 阻塞状态看板卡片上要看得到，所以顺带请父级刷新
+                  onSaved?.();
+                }}
+              />
+            )}
+
+            {feedback.length > 0 && (
+              <div className="space-y-2 border-t border-line pt-4">
+                <p className="text-xs font-medium text-ink-soft">来源反馈</p>
+                {feedback.map((f) => (
+                  <div key={f.id} className="rounded-field bg-sunken p-2.5">
+                    <p className="text-xs text-ink-faint">
+                      {f.milestoneTitle ?? "成果反馈"} ·{" "}
+                      {f.decision === "changes_requested" ? "退回修改" : "通过"} ·{" "}
+                      {f.createdAt.slice(0, 10)}
+                    </p>
+                    <p className="mt-1 whitespace-pre-wrap text-sm text-ink-soft">{f.comment}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {canWrite && local.allowedActions.edit && (
               <LabelDependencyForm
                 projectId={projectId}
                 taskId={task.id}
@@ -364,6 +453,93 @@ export function TaskDetailPanel({
           </div>
         )}
       </aside>
+    </div>
+  );
+}
+
+/**
+ * 阻塞 / 解除阻塞。
+ *
+ * 单独走 setTaskBlockedAction 而不是塞进上面的保存表单：这三个字段在服务层是「一起写」的，
+ * 混进通用 patch 会让「改了状态顺手把阻塞也清了」这种事变得可能。所以刻意分成两个动作。
+ */
+function BlockControl({
+  projectId,
+  taskId,
+  task,
+  onUpdated,
+  onReload,
+}: {
+  projectId: string;
+  taskId: string;
+  task: TaskSummary;
+  onUpdated: (task: TaskSummary) => void;
+  onReload: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(blocked: boolean) {
+    setPending(true);
+    setError(null);
+    const res = await setTaskBlockedAction(projectId, taskId, {
+      requestId: newRequestId(),
+      expectedUpdatedAt: task.updatedAt,
+      isBlocked: blocked,
+      blockedReason: blocked ? reason : null,
+    });
+    setPending(false);
+    if (!res.ok) {
+      setError(res.error);
+      if (res.code === "CONFLICT") onReload();
+      return;
+    }
+    setReason("");
+    onUpdated(res.data.task);
+    onReload();
+  }
+
+  if (task.isBlocked) {
+    return (
+      <div className="space-y-2 border-t border-line pt-4">
+        <p className="text-xs font-medium text-ink-soft">已阻塞</p>
+        <p className="text-sm text-ink">{task.blockedReason}</p>
+        <p className="text-xs text-ink-faint">
+          自 {task.blockedAt?.slice(0, 10) ?? "—"}
+        </p>
+        {error && <p className="text-sm text-high">{error}</p>}
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => void submit(false)}
+          className="ac-btn-ghost text-sm"
+        >
+          {pending ? "处理中…" : "解除阻塞"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 border-t border-line pt-4">
+      <Field label="标记阻塞">
+        <input
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="被什么卡住了（必填）"
+          className="ac-field text-sm"
+        />
+      </Field>
+      {error && <p className="text-sm text-high">{error}</p>}
+      <button
+        type="button"
+        disabled={pending || reason.trim() === ""}
+        onClick={() => void submit(true)}
+        className="ac-btn-ghost text-sm"
+      >
+        {pending ? "处理中…" : "标记为阻塞"}
+      </button>
     </div>
   );
 }

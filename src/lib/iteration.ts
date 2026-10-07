@@ -1,20 +1,45 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "@/db";
 import type { DbTx } from "@/db";
-import { iterations, tasks, users, type IterationStatus } from "@/db/schema";
+import {
+  iterationEvents,
+  iterationHistories,
+  iterations,
+  projects,
+  retrospectives,
+  tasks,
+  teamMembers,
+  users,
+  type IterationStatus,
+} from "@/db/schema";
 import type {
   AssignTasksInput,
   AssignTasksResult,
+  CompleteIterationInput,
+  CompleteIterationResult,
   CreateIterationInput,
   CurrentIteration,
+  DeletePlannedIterationResult,
   Iteration,
+  IterationCompletionPreview,
   IterationDetail,
+  IterationEventType,
+  IterationHistory,
+  IterationHistoryEntry,
   IterationListFilters,
   IterationRevisionInput,
   IterationStats,
+  IterationTaskVersion,
+  MyActiveIteration,
+  PageInput,
   PageResult,
   ReorderBacklogInput,
   ReorderBacklogResult,
+  Retrospective,
+  SaveRetrospectiveInput,
+  SaveRetrospectiveResult,
+  TaskSummary,
+  UnfinishedDisposition,
   UpdateIterationInput,
 } from "@/contracts/p0-p2";
 import { ConflictError, NotFoundError, ValidationError, isUniqueViolation } from "./errors";
@@ -67,6 +92,57 @@ function toIteration(row: IterationRow): Iteration {
     startedAt: row.startedAt ? row.startedAt.toISOString() : null,
     completedAt: row.completedAt ? row.completedAt.toISOString() : null,
   };
+}
+
+type RetrospectiveRow = {
+  id: string;
+  projectId: string;
+  iterationId: string;
+  wentWell: string | null;
+  problems: string | null;
+  nextActions: string | null;
+  authorId: string;
+  revision: number;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+function toRetrospective(row: RetrospectiveRow): Retrospective {
+  return {
+    id: row.id,
+    projectId: row.projectId,
+    iterationId: row.iterationId,
+    wentWell: row.wentWell,
+    problems: row.problems,
+    nextActions: row.nextActions,
+    authorId: row.authorId,
+    revision: row.revision,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * 追加一条迭代事件流水。只 insert，不 update——流水一旦写下就不再改，
+ * 所以并发的两个写操作各写各的，不会互相覆盖。
+ *
+ * 与主操作同一个事务：主操作回滚时这条流水一并消失，正好——没发生的事不该留痕。
+ */
+async function recordEvent(
+  tx: DbTx,
+  projectId: string,
+  iterationId: string,
+  type: IterationEventType,
+  actorId: string | null,
+  payload?: unknown,
+): Promise<void> {
+  await tx.insert(iterationEvents).values({
+    projectId,
+    iterationId,
+    type,
+    actorId,
+    payload: payload ?? null,
+  });
 }
 
 function assertDateRange(startDate: string, endDate: string) {
@@ -181,18 +257,94 @@ export async function getIterationDetail(
     .where(and(eq(iterations.id, iterationId), eq(iterations.projectId, projectId)));
   if (!row) throw new NotFoundError("迭代不存在");
 
-  const taskRows = await loadIterationTasks(projectId, iterationId);
+  const [taskRows, history, retrospective] = await Promise.all([
+    loadIterationTasks(projectId, iterationId),
+    loadIterationHistory(iterationId),
+    loadRetrospective(iterationId),
+  ]);
+
+  // 活动轮看当前，结束轮看快照（定稿 9.3 C-I04）。
+  // 结束时未完成的任务已经搬走，现查 tasks 只会剩下当时就完成的那几个；更要紧的是
+  // 「不可变」——任务后来被改名/删除都不该让这一轮的历史跟着变，所以已结束的轮一律读快照。
+  if (row.status === "completed") {
+    const snapshot = await loadHistorySnapshot(projectId, iterationId);
+    if (snapshot) {
+      return {
+        iteration: toIteration(row),
+        tasks: snapshot.taskSnapshots,
+        stats: snapshot.stats,
+        history,
+        retrospective,
+      };
+    }
+  }
+
   const stats = await iterationStats(taskRows.map((t) => t.id));
 
   return {
     iteration: toIteration(row),
     tasks: taskRows.map(toTaskSummary),
     stats,
-    // P1 才落不可变历史快照；P0 如实返回空数组，不编造事件。
-    history: [],
-    // P1 才有 retrospectives 表。null 表示「还没写复盘」，不是「迭代没结束」。
-    retrospective: null,
+    history,
+    retrospective,
   };
+}
+
+/** 本轮结束时的快照。没写过（理论上不该发生）就返回 null，由调用方退回现查。 */
+async function loadHistorySnapshot(
+  projectId: string,
+  iterationId: string,
+): Promise<IterationHistory | null> {
+  const [row] = await db
+    .select()
+    .from(iterationHistories)
+    .where(
+      and(
+        eq(iterationHistories.iterationId, iterationId),
+        eq(iterationHistories.projectId, projectId),
+      ),
+    );
+  if (!row) return null;
+
+  return {
+    historyId: row.id,
+    iterationId: row.iterationId,
+    closedAt: row.closedAt.toISOString(),
+    iterationSnapshot: row.iterationSnapshot as Iteration,
+    taskSnapshots: row.taskSnapshots as TaskSummary[],
+    stats: row.stats as IterationStats,
+    dispositions: row.dispositions as UnfinishedDisposition[],
+  };
+}
+
+/** 迭代流水，早的在前（回看时按时间读最自然）。按 seq 而非 createdAt 定序，见 schema 注释。 */
+async function loadIterationHistory(iterationId: string): Promise<IterationHistoryEntry[]> {
+  const rows = await db
+    .select({
+      id: iterationEvents.id,
+      type: iterationEvents.type,
+      actorId: iterationEvents.actorId,
+      createdAt: iterationEvents.createdAt,
+    })
+    .from(iterationEvents)
+    .where(eq(iterationEvents.iterationId, iterationId))
+    .orderBy(asc(iterationEvents.seq));
+
+  return rows.map((r) => ({
+    id: r.id,
+    type: r.type,
+    at: r.createdAt.toISOString(),
+    actorId: r.actorId,
+  }));
+}
+
+/** 复盘至多一份（DB 唯一索引兜底）。null = 还没写，与「迭代没结束」是两回事。 */
+async function loadRetrospective(iterationId: string): Promise<Retrospective | null> {
+  const [row] = await db
+    .select()
+    .from(retrospectives)
+    .where(eq(retrospectives.iterationId, iterationId));
+  return row ? toRetrospective(row) : null;
 }
 
 /** 当前迭代 = 唯一 active 的那轮。没有 active 轮时返回 null（不是抛错）。 */
@@ -252,8 +404,133 @@ export async function createIteration(
             revision: 1,
           })
           .returning();
+        await recordEvent(tx, projectId, row.id, "created", actorId, {
+          name: row.name,
+          startDate: row.startDate,
+          endDate: row.endDate,
+        });
         return toIteration(row);
       },
+    ),
+  );
+}
+
+/**
+ * 建迭代 + 挂任务的事务内核。
+ *
+ * AI 草案确认（C-AI02）要在同一个事务里顺手把草案标记为已确认，所以内核只负责
+ * 「建轮 + 归任务」，事务与幂等由调用方包。
+ *
+ * 与 createIteration + assignTasks 两步走相比：这里所有任务都往**全新的**迭代里放，
+ * 不存在「谁先占了」的竞争，但草案是拿几分钟前的快照做的，期间任务可能已被别人排走、
+ * 做完、或改了版本。所以逐个比对，有任何一个对不上就整体回滚，而不是悄悄少挂几个。
+ *
+ * expectedTaskVersions 传了就逐个比对 updatedAt；不传则只校验「此刻还在任务池里」。
+ */
+export async function createIterationWithTasksTx(
+  tx: DbTx,
+  actorId: string,
+  projectId: string,
+  input: {
+    name: string;
+    goal?: string | null;
+    startDate: string;
+    endDate: string;
+    taskIds: string[];
+    expectedTaskVersions?: IterationTaskVersion[];
+  },
+): Promise<{ iteration: Iteration; assignedTaskIds: string[] }> {
+  if (!input.name.trim()) throw new ValidationError("迭代名称不能为空");
+  assertDateRange(input.startDate, input.endDate);
+
+  // 草案里同一个任务被列两次时只挂一次
+  const taskIds = [...new Set(input.taskIds)];
+
+  const [row] = await tx
+    .insert(iterations)
+    .values({
+      projectId,
+      name: input.name,
+      goal: input.goal ?? null,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      status: "planned",
+      revision: 1,
+    })
+    .returning();
+  await recordEvent(tx, projectId, row.id, "created", actorId, {
+    name: row.name,
+    startDate: row.startDate,
+    endDate: row.endDate,
+  });
+
+  if (taskIds.length > 0) {
+    const locked = await tx
+      .select({
+        id: tasks.id,
+        sprintId: tasks.sprintId,
+        status: tasks.status,
+        parentTaskId: tasks.parentTaskId,
+        updatedAt: tasks.updatedAt,
+      })
+      .from(tasks)
+      .where(and(eq(tasks.projectId, projectId), inArray(tasks.id, taskIds)))
+      .for("update");
+    if (locked.length !== taskIds.length) {
+      throw new ConflictError("草案中的任务已被改动，请重新预览");
+    }
+
+    const baseline = input.expectedTaskVersions
+      ? new Map(input.expectedTaskVersions.map((v) => [v.taskId, v.updatedAt]))
+      : null;
+    if (baseline && baseline.size !== taskIds.length) {
+      throw new ConflictError("草案中的任务已被改动，请重新预览");
+    }
+
+    for (const t of locked) {
+      if (t.sprintId !== null) throw new ConflictError("草案中的任务已被排入别的迭代，请重新预览");
+      if (t.status === "done") throw new ConflictError("草案中的任务已完成，请重新预览");
+      if (t.parentTaskId !== null) throw new ConflictError("草案中含子任务，请重新预览");
+      if (baseline) {
+        const expected = baseline.get(t.id);
+        // 时间戳精度：postgres 微秒 vs JS 毫秒，只能比毫秒值，不能比字符串
+        if (expected === undefined || new Date(expected).getTime() !== t.updatedAt.getTime()) {
+          throw new ConflictError("草案中的任务已被改动，请重新预览");
+        }
+      }
+    }
+
+    await tx
+      .update(tasks)
+      .set({ sprintId: row.id, updatedAt: sql`now()` })
+      .where(inArray(tasks.id, taskIds));
+    await recordEvent(tx, projectId, row.id, "tasks_assigned", actorId, { taskIds });
+  }
+
+  return { iteration: toIteration(row), assignedTaskIds: [...taskIds] };
+}
+
+/** 独立入口：自开事务 + 幂等。AI 草案确认走 createIterationWithTasksTx，不经过这里。 */
+export async function createIterationWithTasks(
+  actorId: string,
+  projectId: string,
+  input: {
+    requestId: string;
+    name: string;
+    goal?: string | null;
+    startDate: string;
+    endDate: string;
+    taskIds: string[];
+  },
+): Promise<{ iteration: Iteration; assignedTaskIds: string[] }> {
+  await requireTaskWrite(actorId, projectId);
+
+  return db.transaction((tx) =>
+    runIdempotent(
+      tx,
+      requestKey(projectId, actorId, "iteration.create_with_tasks", input.requestId),
+      input,
+      () => createIterationWithTasksTx(tx, actorId, projectId, input),
     ),
   );
 }
@@ -273,8 +550,10 @@ export async function updateIteration(
       { iterationId, ...input },
       async () => {
         const current = await lockIteration(tx, projectId, iterationId, input.expectedRevision);
-        if (current.status === "completed") {
-          throw new ConflictError("已结束的迭代不可修改");
+        // 定稿 9.3 C-I02：仅 planned 允许改基本字段。进行中的轮改日期会让
+        // 「本轮应该做完什么」在成员眼皮底下变，任务归属与统计都跟着漂——要改就新开一轮。
+        if (current.status !== "planned") {
+          throw new ConflictError("只有计划中的迭代才能修改名称、目标与日期");
         }
 
         const startDate = input.startDate ?? current.startDate;
@@ -293,6 +572,10 @@ export async function updateIteration(
           })
           .where(eq(iterations.id, iterationId))
           .returning();
+        // payload 只记「改了哪些字段」，不记前后值：前后值要读两次、还会把整轮文本塞进流水。
+        await recordEvent(tx, projectId, iterationId, "updated", actorId, {
+          fields: Object.keys(input).filter((k) => k !== "requestId" && k !== "expectedRevision"),
+        });
         return toIteration(row);
       },
     ),
@@ -334,6 +617,7 @@ export async function startIteration(
             })
             .where(eq(iterations.id, iterationId))
             .returning();
+          await recordEvent(tx, projectId, iterationId, "started", actorId);
           return toIteration(row);
         } catch (e) {
           if (isUniqueViolation(e)) throw new ConflictError("该项目已有进行中的迭代");
@@ -347,6 +631,7 @@ export async function startIteration(
 /** 入轮 / 移出的公共骨架：迭代版本 + 每个任务的 updatedAt 双重校验。 */
 async function moveTasks(
   tx: DbTx,
+  actorId: string,
   projectId: string,
   iterationId: string,
   input: AssignTasksInput,
@@ -392,6 +677,16 @@ async function moveTasks(
   }
 
   const next = touched.length > 0 ? await bumpRevision(tx, iterationId) : current;
+  if (touched.length > 0) {
+    await recordEvent(
+      tx,
+      projectId,
+      iterationId,
+      mode === "assign" ? "tasks_assigned" : "tasks_removed",
+      actorId,
+      { taskIds: touched },
+    );
+  }
   return { iteration: toIteration(next), taskIds: touched };
 }
 
@@ -408,7 +703,7 @@ export async function assignTasks(
       tx,
       requestKey(projectId, actorId, "iteration.assign", input.requestId),
       { iterationId, ...input },
-      () => moveTasks(tx, projectId, iterationId, input, "assign"),
+      () => moveTasks(tx, actorId, projectId, iterationId, input, "assign"),
     ),
   );
 }
@@ -426,7 +721,7 @@ export async function removeTasks(
       tx,
       requestKey(projectId, actorId, "iteration.remove", input.requestId),
       { iterationId, ...input },
-      () => moveTasks(tx, projectId, iterationId, input, "remove"),
+      () => moveTasks(tx, actorId, projectId, iterationId, input, "remove"),
     ),
   );
 }
@@ -516,5 +811,394 @@ export async function reorderBacklog(
   );
 }
 
-// P0 只交付上述读写。结束结转 / 历史快照 / 复盘属 P1，届时在同一事务里调
-// moveTasks(tx, ..., "remove") 把未完成任务退回任务池即可，不必现在预留半成品接口。
+/* ------------------------------------------------------------------ *
+ * P1：结束迭代、不可变历史与复盘（定稿 C-I06—C-I11、C-I13）
+ * ------------------------------------------------------------------ */
+
+/** 结束预览与结束操作共用的任务读取：本轮全部任务（含子任务），主任务口径另算。 */
+async function loadIterationTaskRows(
+  exec: DbTx | typeof db,
+  projectId: string,
+  iterationId: string,
+): Promise<TaskRow[]> {
+  return exec
+    .select(SUMMARY_COLS)
+    .from(tasks)
+    .leftJoin(users, eq(tasks.assigneeId, users.id))
+    .where(and(eq(tasks.projectId, projectId), eq(tasks.sprintId, iterationId)))
+    .orderBy(asc(tasks.sortOrder), asc(tasks.id));
+}
+
+/** 可作为未完成任务落点的一轮：同项目、未完成、不是本轮。 */
+async function eligibleNextIterations(
+  exec: DbTx | typeof db,
+  projectId: string,
+  excludeId: string,
+): Promise<Iteration[]> {
+  const rows = await exec
+    .select()
+    .from(iterations)
+    .where(
+      and(
+        eq(iterations.projectId, projectId),
+        ne(iterations.id, excludeId),
+        ne(iterations.status, "completed"),
+      ),
+    )
+    .orderBy(desc(iterations.startDate), asc(iterations.id));
+  return rows.map(toIteration);
+}
+
+/** 本轮的主任务（子任务跟随父任务，不单独安排去向，也不单独计数）。 */
+function mainTasksOf(rows: TaskRow[]): TaskRow[] {
+  return rows.filter((t) => t.parentTaskId === null);
+}
+
+/**
+ * C-I06 结束预览。纯读，不落库——用户看过这张表、填过每个未完成任务的去向，才能结束。
+ *
+ * taskVersions 一并给出来，是为了让「预览」和「结束」之间有据可比：结束时要原样回传，
+ * 中间谁动过任务就对不上，服务端据此拒绝并要求重新预览。
+ */
+export async function previewIterationCompletion(
+  actorId: string,
+  projectId: string,
+  iterationId: string,
+): Promise<IterationCompletionPreview> {
+  const access = await getProjectForUser(actorId, projectId);
+  if (!access) throw new NotFoundError("项目不存在或无权访问");
+
+  const [row] = await db
+    .select()
+    .from(iterations)
+    .where(and(eq(iterations.id, iterationId), eq(iterations.projectId, projectId)));
+  if (!row) throw new NotFoundError("迭代不存在");
+
+  const mainTasks = mainTasksOf(await loadIterationTaskRows(db, projectId, iterationId));
+
+  return {
+    iterationRevision: row.revision,
+    completedTasks: mainTasks.filter((t) => t.status === "done").map(toTaskSummary),
+    unfinishedTasks: mainTasks.filter((t) => t.status !== "done").map(toTaskSummary),
+    eligibleNextIterations: await eligibleNextIterations(db, projectId, iterationId),
+    taskVersions: mainTasks.map((t) => ({ taskId: t.id, updatedAt: t.updatedAt.toISOString() })),
+  };
+}
+
+/**
+ * C-I07 结束迭代。
+ *
+ * 三重校验，缺一不可：
+ *   1. 迭代版本对得上（expectedRevision）；
+ *   2. 每个任务的 updatedAt 与预览时一致——任何变化都要求重新预览，不做「差不多就过」；
+ *   3. unfinishedDisposition 恰好覆盖全部未完成主任务——少一个整体拒绝，多一个也拒绝，
+ *      免得「没提到的任务」被静默冻结或静默退回。
+ *
+ * 状态变更、任务移动、历史快照、事件流水全在一个事务里；快照只写一次（iteration_id 唯一索引兜底）。
+ */
+export async function completeIteration(
+  actorId: string,
+  projectId: string,
+  iterationId: string,
+  input: CompleteIterationInput,
+): Promise<CompleteIterationResult> {
+  await requireTaskWrite(actorId, projectId);
+
+  return db.transaction((tx) =>
+    runIdempotent(
+      tx,
+      requestKey(projectId, actorId, "iteration.complete", input.requestId),
+      { iterationId, ...input },
+      async () => {
+        const current = await lockIteration(tx, projectId, iterationId, input.expectedRevision);
+        if (current.status !== "active") {
+          throw new ConflictError("只有进行中的迭代才能结束");
+        }
+
+        const taskRows = await loadIterationTaskRows(tx, projectId, iterationId);
+        const mainTasks = mainTasksOf(taskRows);
+
+        // 版本基线：预览时给几个任务，现在就得有几个，且逐个对得上
+        const versionOf = new Map(input.taskVersions.map((v) => [v.taskId, v.updatedAt]));
+        if (versionOf.size !== mainTasks.length) {
+          throw new ConflictError("任务已被修改，请重新预览后再结束");
+        }
+        for (const task of mainTasks) {
+          const expected = versionOf.get(task.id);
+          if (expected === undefined || new Date(expected).getTime() !== task.updatedAt.getTime()) {
+            throw new ConflictError("任务已被修改，请重新预览后再结束");
+          }
+        }
+
+        // 去向表必须恰好覆盖未完成主任务
+        const unfinished = mainTasks.filter((t) => t.status !== "done");
+        const dispositionOf = new Map(input.unfinishedDisposition.map((d) => [d.taskId, d]));
+        if (dispositionOf.size !== input.unfinishedDisposition.length) {
+          throw new ValidationError("未完成任务的去向有重复");
+        }
+        for (const task of unfinished) {
+          if (!dispositionOf.has(task.id)) {
+            throw new ValidationError("请为每个未完成任务选择去向");
+          }
+        }
+        for (const taskId of dispositionOf.keys()) {
+          if (!unfinished.some((t) => t.id === taskId)) {
+            throw new ValidationError("去向列表里有不属于本轮未完成任务的项目");
+          }
+        }
+
+        // 目标轮先全部锁住：转入的那几轮 revision 也要跟着涨，得避免并发改同一轮
+        const targets: string[] = [];
+        for (const d of input.unfinishedDisposition) {
+          if (d.destination !== "iteration") continue;
+          if (!d.targetIterationId) throw new ValidationError("转入迭代时必须指定目标迭代");
+          if (targets.includes(d.targetIterationId)) continue;
+          const target = await lockIteration(tx, projectId, d.targetIterationId);
+          if (target.status === "completed") {
+            throw new ValidationError("目标迭代已结束，不能转入");
+          }
+          targets.push(d.targetIterationId);
+        }
+
+        const [row] = await tx
+          .update(iterations)
+          .set({
+            status: "completed",
+            completedAt: sql`now()`,
+            revision: sql`${iterations.revision} + 1`,
+            updatedAt: sql`now()`,
+          })
+          .where(eq(iterations.id, iterationId))
+          .returning();
+
+        const movedTaskIds: string[] = [];
+        for (const d of input.unfinishedDisposition) {
+          await tx
+            .update(tasks)
+            .set({
+              sprintId: d.destination === "backlog" ? null : d.targetIterationId!,
+              updatedAt: sql`now()`,
+            })
+            .where(and(eq(tasks.id, d.taskId), eq(tasks.projectId, projectId)));
+          movedTaskIds.push(d.taskId);
+        }
+        for (const targetId of targets) await bumpRevision(tx, targetId);
+
+        // 快照记的是「它们在本轮时的样子」，所以用搬之前的 taskRows，不重新查一遍。
+        const taskTotal = mainTasks.length;
+        const doneCount = mainTasks.filter((t) => t.status === "done").length;
+        const stats: IterationStats = {
+          taskTotal,
+          doneCount,
+          doneRatio: taskTotal === 0 ? 0 : doneCount / taskTotal,
+        };
+
+        const [history] = await tx
+          .insert(iterationHistories)
+          .values({
+            projectId,
+            iterationId,
+            iterationSnapshot: toIteration(row),
+            taskSnapshots: taskRows.map(toTaskSummary),
+            stats,
+            dispositions: input.unfinishedDisposition,
+          })
+          .returning({ id: iterationHistories.id });
+
+        await recordEvent(tx, projectId, iterationId, "completed", actorId, {
+          historyId: history.id,
+          movedTaskIds,
+        });
+
+        return { iteration: toIteration(row), historyId: history.id, movedTaskIds };
+      },
+    ),
+  );
+}
+
+/**
+ * C-I08 不可变历史。快照写下去就不再变，所以这里只读、不做任何重算；
+ * 任务后来被改名、完成或删除，都不影响这份记录。没结束过的轮返回 null。
+ */
+export async function getIterationHistory(
+  actorId: string,
+  projectId: string,
+  iterationId: string,
+): Promise<IterationHistory | null> {
+  const access = await getProjectForUser(actorId, projectId);
+  if (!access) throw new NotFoundError("项目不存在或无权访问");
+
+  return loadHistorySnapshot(projectId, iterationId);
+}
+
+/** C-I09 复盘。没写就返回 null——「没填复盘」不等于「迭代没结束」。 */
+export async function getIterationRetrospective(
+  actorId: string,
+  projectId: string,
+  iterationId: string,
+): Promise<Retrospective | null> {
+  const access = await getProjectForUser(actorId, projectId);
+  if (!access) throw new NotFoundError("项目不存在或无权访问");
+  return loadRetrospective(iterationId);
+}
+
+/**
+ * C-I10 写复盘。复盘只属于已结束的轮——进行中的迭代还没什么可复盘，
+ * 允许写只会让「迭代没结束」和「复盘已填」两个信号互相打架。
+ */
+export async function saveIterationRetrospective(
+  actorId: string,
+  projectId: string,
+  iterationId: string,
+  input: SaveRetrospectiveInput,
+): Promise<SaveRetrospectiveResult> {
+  await requireTaskWrite(actorId, projectId);
+
+  return db.transaction((tx) =>
+    runIdempotent(
+      tx,
+      requestKey(projectId, actorId, "iteration.retrospective", input.requestId),
+      { iterationId, ...input },
+      async () => {
+        const current = await lockIteration(tx, projectId, iterationId);
+        if (current.status !== "completed") {
+          throw new ValidationError("只能为已结束的迭代写复盘");
+        }
+
+        const [existing] = await tx
+          .select()
+          .from(retrospectives)
+          .where(eq(retrospectives.iterationId, iterationId))
+          .for("update");
+
+        if (existing) {
+          if (input.expectedRevision === undefined || input.expectedRevision !== existing.revision) {
+            throw new ConflictError("复盘已被他人修改，请刷新后重试");
+          }
+          const [row] = await tx
+            .update(retrospectives)
+            .set({
+              ...(input.wentWell !== undefined && { wentWell: input.wentWell }),
+              ...(input.problems !== undefined && { problems: input.problems }),
+              ...(input.nextActions !== undefined && { nextActions: input.nextActions }),
+              authorId: actorId,
+              revision: sql`${retrospectives.revision} + 1`,
+              updatedAt: sql`now()`,
+            })
+            .where(eq(retrospectives.id, existing.id))
+            .returning();
+          await recordEvent(tx, projectId, iterationId, "retrospective_saved", actorId, {
+            revision: row.revision,
+          });
+          return { retrospective: toRetrospective(row) };
+        }
+
+        if (input.expectedRevision !== undefined) {
+          throw new ConflictError("复盘不存在，请刷新后重试");
+        }
+
+        const [row] = await tx
+          .insert(retrospectives)
+          .values({
+            projectId,
+            iterationId,
+            wentWell: input.wentWell ?? null,
+            problems: input.problems ?? null,
+            nextActions: input.nextActions ?? null,
+            authorId: actorId,
+            revision: 1,
+          })
+          .returning();
+        await recordEvent(tx, projectId, iterationId, "retrospective_saved", actorId, {
+          revision: 1,
+        });
+        return { retrospective: toRetrospective(row) };
+      },
+    ),
+  );
+}
+
+/** C-I11 删除尚未开始的迭代。关联任务退回任务池，任务本身一个不删。 */
+export async function deletePlannedIteration(
+  actorId: string,
+  projectId: string,
+  iterationId: string,
+  input: IterationRevisionInput,
+): Promise<DeletePlannedIterationResult> {
+  await requireTaskWrite(actorId, projectId);
+
+  return db.transaction((tx) =>
+    runIdempotent(
+      tx,
+      requestKey(projectId, actorId, "iteration.delete", input.requestId),
+      { iterationId, ...input },
+      async () => {
+        const current = await lockIteration(tx, projectId, iterationId, input.expectedRevision);
+        if (current.status !== "planned") {
+          throw new ConflictError("只有未开始的迭代才能删除");
+        }
+
+        await tx
+          .update(tasks)
+          .set({ sprintId: null, updatedAt: sql`now()` })
+          .where(and(eq(tasks.projectId, projectId), eq(tasks.sprintId, iterationId)));
+
+        // 事件流水与历史快照随迭代级联删除，不必手工清
+        await tx.delete(iterations).where(eq(iterations.id, iterationId));
+        return { deleted: true as const, iterationId };
+      },
+    ),
+  );
+}
+
+/**
+ * C-I13 我的活跃迭代：本人当前仍是成员的那些项目里，正在进行的轮。
+ * 「当前仍是成员」由 team_members 现查决定——退组之后不该还能在工作台看到它。
+ */
+export async function listMyActiveIterations(
+  actorId: string,
+  filters: PageInput = {},
+): Promise<PageResult<MyActiveIteration>> {
+  const { offset, limit } = normalizePage(filters);
+
+  const scope = and(
+    eq(iterations.status, "active"),
+    eq(teamMembers.userId, actorId),
+    eq(projects.status, "active"),
+  );
+
+  const rows = await db
+    .select({ iteration: iterations, projectName: projects.name })
+    .from(iterations)
+    .innerJoin(projects, eq(projects.id, iterations.projectId))
+    .innerJoin(teamMembers, eq(teamMembers.teamId, projects.teamId))
+    .where(scope)
+    .orderBy(desc(iterations.startDate), asc(iterations.id))
+    .limit(limit)
+    .offset(offset);
+
+  const [counted] = await db
+    .select({ total: sql<number>`count(*)::int` })
+    .from(iterations)
+    .innerJoin(projects, eq(projects.id, iterations.projectId))
+    .innerJoin(teamMembers, eq(teamMembers.teamId, projects.teamId))
+    .where(scope);
+
+  const asOf = new Date().toISOString();
+  const items: MyActiveIteration[] = [];
+  for (const { iteration, projectName } of rows) {
+    // 每轮单独统计：跨轮合并算出来的 doneRatio 在页面上没法用
+    const taskRows = await loadIterationTasks(iteration.projectId, iteration.id);
+    const stats = await iterationStats(taskRows.map((t) => t.id));
+    items.push({
+      ...toIteration(iteration),
+      projectName,
+      ...stats,
+      scope: "main-tasks",
+      asOf,
+      sourceHref: `/projects/${iteration.projectId}/iterations/${iteration.id}`,
+    });
+  }
+
+  return pageResult(items, counted?.total ?? 0, offset, limit);
+}

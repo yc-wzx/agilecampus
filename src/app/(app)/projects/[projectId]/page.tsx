@@ -7,9 +7,6 @@ import { conversations, messages as messagesTable } from "@/db/schema";
 import { getProjectForUser, listProjectMilestones } from "@/lib/project";
 import { listTeamMembers } from "@/lib/team";
 import { listProjectTasks, listProjectDependencies } from "@/lib/task";
-import { getTaskPanelData } from "@/lib/task-contract";
-import { AppError } from "@/lib/errors";
-import type { TaskPanelState } from "@/components/tasks/task-detail-panel";
 import { listTeamLabels } from "@/lib/label";
 import { parseFilters, applyFilters } from "@/lib/board-filters";
 import { MilestoneSection } from "./milestone-section";
@@ -17,24 +14,6 @@ import { NewTaskForm } from "./new-task-form";
 import { Board } from "./board";
 import { ChatPanel } from "./chat-panel";
 import { FilterBar } from "./filter-bar";
-
-/**
- * 解析 ?task= 并取回侧边栏数据。无参数或参数非法时返回 null（面板不打开）。
- * 取数失败翻成面板内的错误提示，不打断整页。
- */
-async function loadTaskPanel(
-  actorId: string,
-  projectId: string,
-  raw: string | string[] | undefined,
-): Promise<TaskPanelState | null> {
-  if (typeof raw !== "string" || !z.uuid().safeParse(raw).success) return null;
-  try {
-    return { taskId: raw, data: await getTaskPanelData(actorId, projectId, raw), error: null };
-  } catch (e) {
-    const message = e instanceof AppError ? e.message : "任务详情暂时不可用";
-    return { taskId: raw, data: null, error: message };
-  }
-}
 
 export default async function ProjectPage({
   params,
@@ -75,10 +54,9 @@ export default async function ProjectPage({
   const canWrite = role === "admin" || role === "student";
   const isAdmin = role === "admin";
 
-  // 详情侧边栏由 URL 的 ?task= 驱动：服务端在这里取数并鉴权，客户端只负责渲染。
-  // 取不到（越权 / 已删除）不抛 404 整页，而是把错误交给面板显示——用户还在看板上，
-  // 不该因为一个失效的深链就丢掉整页上下文。
-  const panel = await loadTaskPanel(session.user.id, projectId, sp.task);
+  // 详情侧边栏由 URL 的 ?task= 驱动，但**取数在面板自己手里**（定稿 9.2 侧边栏契约）：
+  // 它按 taskId 调 getTaskPanelContextAction，挂载与切换都重新鉴权。取不到只影响面板本身，
+  // 用户还在看板上，不会因为一个失效的深链就丢掉整页上下文。
 
   const [latestConv] = await db
     .select({ id: conversations.id })
@@ -105,6 +83,7 @@ export default async function ProjectPage({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <h1 className="min-w-0 break-words font-display text-2xl font-semibold text-ink">{project.name}</h1>
           <nav className="flex flex-wrap items-center gap-2 whitespace-nowrap" aria-label="项目页面">
+            <a href={`/projects/${projectId}/iterations`} className="ac-btn-ghost">迭代</a>
             <a href={`/projects/${projectId}/overview`} className="ac-btn-ghost">概览</a>
             <a href={`/projects/${projectId}/deliverables`} className="ac-btn-ghost">阶段成果</a>
             <a href={`/projects/${projectId}/timeline`} className="ac-btn-ghost">时间线</a>
@@ -154,9 +133,7 @@ export default async function ProjectPage({
           members={members}
           milestones={projectMilestones.map((m) => ({ id: m.id, name: m.title }))}
           allTasks={projectTasks.map((t) => ({ id: t.id, title: t.title }))}
-          allLabels={teamLabels.map((l) => ({ id: l.id, name: l.name }))}
           dependencies={dependencies}
-          panel={panel}
         />
       </section>
 

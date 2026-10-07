@@ -7,10 +7,12 @@ import { createTask } from "@/lib/task";
 import { listBacklog } from "@/lib/task-contract";
 import {
   assignTasks,
+  completeIteration,
   createIteration,
   getCurrentIteration,
   getIterationDetail,
   listProjectIterations,
+  previewIterationCompletion,
   reorderBacklog,
   removeTasks,
   startIteration,
@@ -227,6 +229,50 @@ describe("updateIteration", () => {
     ).rejects.toThrow("已被他人修改");
   });
 
+  it("进行中的迭代不能改基本字段（定稿：仅 planned 可改）", async () => {
+    const { student, project } = await scene();
+    const it0 = await makeIteration(student.id, project.id);
+    const started = await startIteration(student.id, project.id, it0.id, {
+      requestId: rid(),
+      expectedRevision: it0.revision,
+    });
+    await expect(
+      updateIteration(student.id, project.id, it0.id, {
+        requestId: rid(),
+        expectedRevision: started.revision,
+        name: "偷偷改名",
+      }),
+    ).rejects.toThrow("只有计划中的迭代");
+
+    const page = await listProjectIterations(student.id, project.id);
+    expect(page.items[0].name).toBe("第一轮");
+    expect(page.items[0].revision).toBe(started.revision);
+  });
+
+  it("已结束的迭代不能改基本字段", async () => {
+    const { student, project } = await scene();
+    const it0 = await makeIteration(student.id, project.id);
+    await startIteration(student.id, project.id, it0.id, {
+      requestId: rid(),
+      expectedRevision: it0.revision,
+    });
+    const preview = await previewIterationCompletion(student.id, project.id, it0.id);
+    const closed = await completeIteration(student.id, project.id, it0.id, {
+      requestId: rid(),
+      expectedRevision: preview.iterationRevision,
+      taskVersions: preview.taskVersions,
+      unfinishedDisposition: [],
+    });
+
+    await expect(
+      updateIteration(student.id, project.id, it0.id, {
+        requestId: rid(),
+        expectedRevision: closed.iteration.revision,
+        name: "偷偷改名",
+      }),
+    ).rejects.toThrow("只有计划中的迭代");
+  });
+
   it("只改结束日期时仍校验区间", async () => {
     const { student, project } = await scene();
     const it0 = await makeIteration(student.id, project.id);
@@ -265,8 +311,8 @@ describe("assignTasks / removeTasks", () => {
     expect(detail.tasks[0].iterationId).toBe(it0.id);
     expect(detail.stats.taskTotal).toBe(1);
     expect(detail.stats.doneRatio).toBe(0);
-    // P1 才落历史与复盘，P0 如实为空
-    expect(detail.history).toEqual([]);
+    // 入轮留下流水；复盘要等迭代结束才写得了，此刻如实为空
+    expect(detail.history.map((h) => h.type)).toEqual(["created", "tasks_assigned"]);
     expect(detail.retrospective).toBeNull();
 
     const [afterAssign] = (

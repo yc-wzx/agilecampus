@@ -3,33 +3,36 @@
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import {
-  type AssignTasksInput,
-  type AssignTasksResult,
+  type CompleteIterationInput,
+  type CompleteIterationResult,
   type CreateIterationInput,
-  type CurrentIteration,
+  type DeletePlannedIterationResult,
   type Iteration,
-  type IterationDetail,
+  type IterationCompletionPreview,
   type IterationRevisionInput,
-  type PageResult,
-  type ReorderBacklogInput,
-  type ReorderBacklogResult,
   type Result,
+  type SaveRetrospectiveInput,
+  type SaveRetrospectiveResult,
   type UpdateIterationInput,
 } from "@/contracts/p0-p2";
 import { runAction } from "@/lib/action-result";
 import {
-  assignTasks,
+  completeIteration,
   createIteration,
-  getCurrentIteration,
-  getIterationDetail,
-  listProjectIterations,
-  removeTasks,
-  reorderBacklog,
+  deletePlannedIteration,
+  previewIterationCompletion,
+  saveIterationRetrospective,
   startIteration,
   updateIteration,
 } from "@/lib/iteration";
 
-// C / P0：迭代与任务池排序的 Action（定稿 §9.3）。
+// C：迭代生命周期的 Action（定稿 §9.3）。C-I01/02/05/07/10/11。
+//
+// 任务池排序与入轮/移出（C-T03/04/05）不在这里——定稿把它们的导入路径钉在
+// `.../tasks/actions.ts`，与本文件同属 C，但消费者要从那边 import。
+//
+// AI 迭代草案的入口不在这里——定稿把 C-AI02 与 E 的 E-AI05/06 一并放在
+// `.../ai-drafts/actions.ts`，由 E 主维护。这里只保留人工创建与结束迭代这条线。
 
 const requestId = z.uuid("请求标识不合法");
 const instant = z
@@ -64,19 +67,41 @@ const updateIterationSchema = z.object({
 const revisionSchema = z.object({ requestId, expectedRevision: revision });
 
 /** 入轮/移出：每个任务都要带自己的版本，服务层逐个锁行比对。 */
-const assignTasksSchema = z.object({
+
+
+/* --- P1：结束迭代、历史与复盘 --- */
+
+/** 预览基线：一个任务一条，结束时要原样回传。 */
+const taskVersionsSchema = z
+  .array(z.object({ taskId: z.uuid("任务 id 不合法"), updatedAt: instant }))
+  .max(500, "一次最多处理 500 个任务");
+
+/** 未完成任务的去向。服务层还会核对「是否恰好覆盖全部未完成主任务」，这里只管形状。 */
+const dispositionSchema = z
+  .array(
+    z.object({
+      taskId: z.uuid("任务 id 不合法"),
+      destination: z.enum(["backlog", "iteration"], "去向只能是任务池或另一轮迭代"),
+      targetIterationId: z.uuid("目标迭代 id 不合法").optional(),
+    }),
+  )
+  .max(500, "一次最多处理 500 个任务");
+
+const completeSchema = z.object({
   requestId,
   expectedRevision: revision,
-  tasks: z
-    .array(z.object({ taskId: z.uuid("任务 id 不合法"), expectedUpdatedAt: instant }))
-    .min(1, "至少要选一个任务"),
+  taskVersions: taskVersionsSchema,
+  unfinishedDisposition: dispositionSchema,
 });
 
-const reorderSchema = z.object({
+const retroText = z.string().max(10000, "复盘内容最多 10000 字").nullish();
+
+const retrospectiveSchema = z.object({
   requestId,
-  taskId: z.uuid("任务 id 不合法"),
-  beforeTaskId: z.uuid("锚点任务 id 不合法").nullable(),
-  expectedUpdatedAt: instant,
+  expectedRevision: z.number().int("版本号必须是整数").positive("版本号不合法").optional(),
+  wentWell: retroText,
+  problems: retroText,
+  nextActions: retroText,
 });
 
 function invalid(error: z.ZodError): Result<never> {
@@ -91,39 +116,6 @@ function refresh(projectId: string, extra?: string) {
   } catch {
     console.error("[iterations] cache refresh failed");
   }
-}
-
-/* --- 读 --- */
-
-export async function listProjectIterationsAction(
-  projectId: string,
-): Promise<Result<PageResult<Iteration>>> {
-  if (!z.uuid().safeParse(projectId).success) {
-    return { ok: false, code: "VALIDATION", error: "项目 id 不合法" };
-  }
-  return runAction((actorId) => listProjectIterations(actorId, projectId));
-}
-
-export async function getCurrentIterationAction(
-  projectId: string,
-): Promise<Result<CurrentIteration | null>> {
-  if (!z.uuid().safeParse(projectId).success) {
-    return { ok: false, code: "VALIDATION", error: "项目 id 不合法" };
-  }
-  return runAction((actorId) => getCurrentIteration(actorId, projectId));
-}
-
-export async function getIterationDetailAction(
-  projectId: string,
-  iterationId: string,
-): Promise<Result<IterationDetail>> {
-  const parsed = z
-    .object({ projectId: z.uuid(), iterationId: z.uuid() })
-    .safeParse({ projectId, iterationId });
-  if (!parsed.success) return invalid(parsed.error);
-  return runAction((actorId) =>
-    getIterationDetail(actorId, parsed.data.projectId, parsed.data.iterationId),
-  );
 }
 
 /* --- 写 --- */
@@ -175,49 +167,68 @@ export async function startIterationAction(
   return result;
 }
 
-export async function assignTasksToIterationAction(
+/* --- P1：结束迭代、历史与复盘 --- */
+
+/** C-I06。结束确认表单的取数入口：纯读，不落库，也就不需要 refresh。 */
+export async function previewIterationCompletionAction(
   projectId: string,
   iterationId: string,
-  input: AssignTasksInput,
-): Promise<Result<AssignTasksResult>> {
-  const parsed = assignTasksSchema
+): Promise<Result<IterationCompletionPreview>> {
+  const parsed = z
+    .object({ projectId: z.uuid(), iterationId: z.uuid() })
+    .safeParse({ projectId, iterationId });
+  if (!parsed.success) return invalid(parsed.error);
+  return runAction((actorId) =>
+    previewIterationCompletion(actorId, parsed.data.projectId, parsed.data.iterationId),
+  );
+}
+
+export async function completeIterationAction(
+  projectId: string,
+  iterationId: string,
+  input: CompleteIterationInput,
+): Promise<Result<CompleteIterationResult>> {
+  const parsed = completeSchema
     .extend({ projectId: z.uuid("项目 id 不合法"), iterationId: z.uuid("迭代 id 不合法") })
     .safeParse({ ...input, projectId, iterationId });
   if (!parsed.success) return invalid(parsed.error);
 
   const { projectId: pid, iterationId: iid, ...rest } = parsed.data;
-  const result = await runAction((actorId) => assignTasks(actorId, pid, iid, rest));
+  const result = await runAction((actorId) => completeIteration(actorId, pid, iid, rest));
   if (result.ok) refresh(pid);
   return result;
 }
 
-export async function removeTasksFromIterationAction(
+/** C-I08。不可变快照；没结束过的轮返回 null（不是抛错）。 */
+export async function saveIterationRetrospectiveAction(
   projectId: string,
   iterationId: string,
-  input: AssignTasksInput,
-): Promise<Result<AssignTasksResult>> {
-  const parsed = assignTasksSchema
+  input: SaveRetrospectiveInput,
+): Promise<Result<SaveRetrospectiveResult>> {
+  const parsed = retrospectiveSchema
     .extend({ projectId: z.uuid("项目 id 不合法"), iterationId: z.uuid("迭代 id 不合法") })
     .safeParse({ ...input, projectId, iterationId });
   if (!parsed.success) return invalid(parsed.error);
 
   const { projectId: pid, iterationId: iid, ...rest } = parsed.data;
-  const result = await runAction((actorId) => removeTasks(actorId, pid, iid, rest));
+  const result = await runAction((actorId) => saveIterationRetrospective(actorId, pid, iid, rest));
   if (result.ok) refresh(pid);
   return result;
 }
 
-export async function reorderBacklogAction(
+/** C-I11。删的是轮，不是任务：关联任务在同一事务里退回任务池。 */
+export async function deletePlannedIterationAction(
   projectId: string,
-  input: ReorderBacklogInput,
-): Promise<Result<ReorderBacklogResult>> {
-  const parsed = reorderSchema
-    .extend({ projectId: z.uuid("项目 id 不合法") })
-    .safeParse({ ...input, projectId });
+  iterationId: string,
+  input: IterationRevisionInput,
+): Promise<Result<DeletePlannedIterationResult>> {
+  const parsed = revisionSchema
+    .extend({ projectId: z.uuid("项目 id 不合法"), iterationId: z.uuid("迭代 id 不合法") })
+    .safeParse({ ...input, projectId, iterationId });
   if (!parsed.success) return invalid(parsed.error);
 
-  const { projectId: pid, ...rest } = parsed.data;
-  const result = await runAction((actorId) => reorderBacklog(actorId, pid, rest));
+  const { projectId: pid, iterationId: iid, ...rest } = parsed.data;
+  const result = await runAction((actorId) => deletePlannedIteration(actorId, pid, iid, rest));
   if (result.ok) refresh(pid);
   return result;
 }

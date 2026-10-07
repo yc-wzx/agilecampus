@@ -226,7 +226,8 @@ describe("getSubtaskProgress", () => {
   it("无子任务时 ratio 为 null（不是 0）", async () => {
     const { student, project } = await scene();
     const parent = await createTask(student.id, project.id, { title: "父" });
-    const progress = await getSubtaskProgress(parent.id);
+    const [progress] = await getSubtaskProgress(student.id, project.id, [parent.id]);
+    expect(progress.parentTaskId).toBe(parent.id);
     expect(progress.total).toBe(0);
     expect(progress.doneCount).toBe(0);
     expect(progress.ratio).toBeNull();
@@ -240,9 +241,40 @@ describe("getSubtaskProgress", () => {
     await createSubtask(student.id, c1.id, { title: "孙" });
     await updateTask(student.id, c1.id, { status: "done" });
 
-    const progress = await getSubtaskProgress(parent.id);
+    const [progress] = await getSubtaskProgress(student.id, project.id, [parent.id]);
     expect(progress.total).toBe(2);
     expect(progress.doneCount).toBe(1);
     expect(progress.ratio).toBe(0.5);
+  });
+
+  it("批量：每个请求到的父任务都有一条，没子任务的 ratio 为 null", async () => {
+    const { student, project } = await scene();
+    const withChild = await createTask(student.id, project.id, { title: "有子任务" });
+    const bare = await createTask(student.id, project.id, { title: "没子任务" });
+    await createSubtask(student.id, withChild.id, { title: "子" });
+
+    const list = await getSubtaskProgress(student.id, project.id, [withChild.id, bare.id]);
+    expect(list.map((p) => p.parentTaskId)).toEqual([withChild.id, bare.id]);
+    expect(list[0].total).toBe(1);
+    expect(list[1].ratio).toBeNull();
+  });
+
+  it("重复的父任务只回一条；混进别的项目的任务整体拒绝", async () => {
+    const { owner, student, team, project } = await scene();
+    const parent = await createTask(student.id, project.id, { title: "父" });
+    const deduped = await getSubtaskProgress(student.id, project.id, [parent.id, parent.id]);
+    expect(deduped).toHaveLength(1);
+
+    const other = await createProject(owner.id, team.id, { name: "别处" });
+    const foreign = await createTask(owner.id, other.id, { title: "外项目的任务" });
+    await expect(
+      getSubtaskProgress(student.id, project.id, [foreign.id]),
+    ).rejects.toThrow("任务不存在");
+  });
+
+  it("一次超过上限就拒绝", async () => {
+    const { student, project } = await scene();
+    const ids = Array.from({ length: 101 }, () => randomUUID());
+    await expect(getSubtaskProgress(student.id, project.id, ids)).rejects.toThrow("最多");
   });
 });

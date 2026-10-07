@@ -1,21 +1,29 @@
-import { and, asc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, ne, not, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import type { DbTx } from "@/db";
 import { taskDependencies, tasks, users, type TaskPriority, type TaskStatus } from "@/db/schema";
-import type {
-  BacklogFilters,
-  CreateTaskV1Input,
-  DeleteTaskV1Input,
-  DeleteTaskV1Result,
-  PageResult,
-  SubtaskProgress,
-  TaskAllowedActions,
-  TaskPanelData,
-  TaskSummary,
-  TaskV1Result,
-  UpdateTaskV1Input,
+import {
+  SUBTASK_PROGRESS_MAX_PARENTS,
+  type BacklogFilters,
+  type CreateTaskV1Input,
+  type DeleteTaskV1Input,
+  type DeleteTaskV1Result,
+  type PageResult,
+  type ProjectTaskStats,
+  type SetTaskBlockedInput,
+  type SetTaskBlockedResult,
+  type SourceRef,
+  type SubtaskProgress,
+  type TaskAllowedActions,
+  type TaskAttentionFilters,
+  type TaskAttentionItem,
+  type TaskPanelData,
+  type TaskStatusValue,
+  type TaskSummary,
+  type TaskV1Result,
+  type UpdateTaskV1Input,
 } from "@/contracts/p0-p2";
-import { ConflictError, ForbiddenError, NotFoundError } from "./errors";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors";
 import { normalizePage, pageResult } from "./pagination";
 import { getProjectForUser } from "./project";
 import {
@@ -48,6 +56,9 @@ export const SUMMARY_COLS = {
   assigneeId: tasks.assigneeId,
   assigneeName: users.name,
   completionNote: tasks.completionNote,
+  isBlocked: tasks.isBlocked,
+  blockedReason: tasks.blockedReason,
+  blockedAt: tasks.blockedAt,
   updatedAt: tasks.updatedAt,
 } as const;
 
@@ -69,13 +80,15 @@ export type TaskRow = {
   assigneeId: string | null;
   assigneeName: string | null;
   completionNote: string | null;
+  isBlocked: boolean;
+  blockedReason: string | null;
+  blockedAt: Date | null;
   updatedAt: Date;
 };
 
 /**
  * DB 行 -> TaskSummary。sprint_id -> iterationId 的唯一映射点。
  *
- * isBlocked/blockedReason/blockedAt 是 P1 才落库的列，此处先返回字面量。
  * updatedAt 一律 toISOString()：前端须原样回传为 expectedUpdatedAt（定稿 §9.2），
  * 不得在浏览器侧重新生成——那会丢掉与服务端时钟的对齐。
  */
@@ -95,9 +108,9 @@ export function toTaskSummary(row: TaskRow): TaskSummary {
     parentTaskId: row.parentTaskId,
     iterationId: row.sprintId,
     acceptanceCriteria: row.acceptanceCriteria,
-    isBlocked: false,
-    blockedReason: null,
-    blockedAt: null,
+    isBlocked: row.isBlocked,
+    blockedReason: row.blockedReason,
+    blockedAt: row.blockedAt ? row.blockedAt.toISOString() : null,
     completionNote: row.completionNote,
     updatedAt: row.updatedAt.toISOString(),
     sourceHref: `/projects/${row.projectId}?task=${row.id}`,
@@ -183,7 +196,7 @@ export async function getTaskPanelData(
           eq(taskDependencies.successorId, taskId),
         ),
       ),
-    getSubtaskProgress(taskId),
+    getSubtaskProgressExec(db, taskId),
   ]);
 
   const canWrite = TASK_WRITE_ROLES.includes(access.role);
@@ -319,9 +332,63 @@ export async function deleteTaskV1(
   );
 }
 
-/** 直接子任务进度。无子任务时 ratio 为 null（不是 0，也不是 100%）。 */
-export async function getSubtaskProgress(parentTaskId: string): Promise<SubtaskProgress> {
-  const [row] = await db
+/**
+ * C-T07：批量取直接子任务进度。无子任务的父任务也会出现在结果里（total 0、ratio null），
+ * 这样调用方不必自己补空位——少一行才是更容易出错的写法。
+ */
+export async function getSubtaskProgress(
+  actorId: string,
+  projectId: string,
+  parentTaskIds: string[],
+): Promise<SubtaskProgress[]> {
+  const access = await getProjectForUser(actorId, projectId);
+  if (!access) throw new ForbiddenError();
+
+  const ids = [...new Set(parentTaskIds)];
+  if (ids.length === 0) return [];
+  if (ids.length > SUBTASK_PROGRESS_MAX_PARENTS) {
+    throw new ValidationError(`一次最多查询 ${SUBTASK_PROGRESS_MAX_PARENTS} 个父任务`);
+  }
+
+  // 父任务本身也要属于本项目：拿别的项目的任务 id 混进来，概览就会算错。
+  const owners = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(eq(tasks.projectId, projectId), inArray(tasks.id, ids)));
+  if (owners.length !== ids.length) throw new NotFoundError("任务不存在");
+
+  const rows = await db
+    .select({
+      parentTaskId: tasks.parentTaskId,
+      total: sql<number>`count(*)::int`,
+      doneCount: sql<number>`(count(*) filter (where ${tasks.status} = 'done'))::int`,
+    })
+    .from(tasks)
+    .where(and(eq(tasks.projectId, projectId), inArray(tasks.parentTaskId, ids)))
+    .groupBy(tasks.parentTaskId);
+
+  const byParent = new Map(
+    rows
+      .filter((r): r is typeof r & { parentTaskId: string } => r.parentTaskId !== null)
+      .map((r) => [r.parentTaskId, r]),
+  );
+
+  return ids.map((parentTaskId) => {
+    const row = byParent.get(parentTaskId);
+    const total = row?.total ?? 0;
+    const doneCount = row?.doneCount ?? 0;
+    return {
+      parentTaskId,
+      total,
+      doneCount,
+      ratio: total === 0 ? null : doneCount / total,
+    };
+  });
+}
+
+/** 面板只要一个任务的进度，走内部单条查询，不必为它凑一个数组。 */
+async function getSubtaskProgressExec(exec: Exec, parentTaskId: string): Promise<SubtaskProgress> {
+  const [row] = await exec
     .select({
       total: sql<number>`count(*)::int`,
       doneCount: sql<number>`(count(*) filter (where ${tasks.status} = 'done'))::int`,
@@ -337,4 +404,171 @@ export async function getSubtaskProgress(parentTaskId: string): Promise<SubtaskP
     doneCount,
     ratio: total === 0 ? null : doneCount / total,
   };
+}
+
+/**
+ * 阻塞 / 解除阻塞。三个字段一起写，不留给调用方分别改的机会——
+ * 「解除了阻塞但 blockedAt 还留着」这种不一致状态在数据里最难查。
+ */
+export async function setTaskBlocked(
+  actorId: string,
+  projectId: string,
+  taskId: string,
+  input: SetTaskBlockedInput,
+): Promise<SetTaskBlockedResult> {
+  return db.transaction((tx) =>
+    runIdempotent(
+      tx,
+      taskKey(projectId, actorId, "task.block", input.requestId),
+      { taskId, ...input },
+      async () => {
+        await requireTaskWrite(actorId, projectId);
+
+        const [task] = await tx
+          .select({ id: tasks.id, projectId: tasks.projectId, updatedAt: tasks.updatedAt })
+          .from(tasks)
+          .where(eq(tasks.id, taskId))
+          .for("update");
+        if (!task || task.projectId !== projectId) throw new NotFoundError("任务不存在");
+
+        const expected = new Date(input.expectedUpdatedAt);
+        if (Number.isNaN(expected.getTime()) || expected.getTime() !== task.updatedAt.getTime()) {
+          throw new ConflictError("任务已被他人修改，请刷新后重试");
+        }
+
+        const reason = input.blockedReason?.trim() ?? "";
+        if (input.isBlocked && reason === "") {
+          throw new ValidationError("阻塞任务时请填写原因");
+        }
+
+        await tx
+          .update(tasks)
+          .set({
+            isBlocked: input.isBlocked,
+            blockedReason: input.isBlocked ? reason : null,
+            blockedAt: input.isBlocked ? sql`now()` : null,
+            updatedAt: sql`now()`,
+          })
+          .where(eq(tasks.id, taskId));
+
+        return { task: await summaryById(tx, projectId, taskId) };
+      },
+    ),
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * P2：项目级统计与「需关注任务」（C-T08 / C-T09）
+ * ------------------------------------------------------------------ */
+
+/** 北京时间「今天」的 YYYY-MM-DD。服务端算，不让浏览器定这个话语权。 */
+function todayInBeijing(now = new Date()): string {
+  return new Date(now.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * C-T08 项目任务统计。口径固定为主任务：子任务不计入，否则一个父任务会被算两次。
+ * total 为 0 时 doneRatio 是 null——「没有任务」与「一个都没做完」是两回事。
+ */
+export async function getProjectTaskStats(
+  actorId: string,
+  projectId: string,
+): Promise<ProjectTaskStats> {
+  const access = await getProjectForUser(actorId, projectId);
+  if (!access) throw new ForbiddenError();
+
+  const today = todayInBeijing();
+  const rows = await db
+    .select({
+      status: tasks.status,
+      dueDate: tasks.dueDate,
+      isBlocked: tasks.isBlocked,
+    })
+    .from(tasks)
+    .where(and(eq(tasks.projectId, projectId), isNull(tasks.parentTaskId)));
+
+  const byStatus: Record<TaskStatusValue, number> = { todo: 0, doing: 0, done: 0 };
+  let overdueCount = 0;
+  let blockedCount = 0;
+
+  for (const row of rows) {
+    byStatus[row.status] += 1;
+    if (row.isBlocked) blockedCount += 1;
+    // 没有日期不算逾期；已完成也不算
+    if (row.status !== "done" && row.dueDate !== null && row.dueDate < today) overdueCount += 1;
+  }
+
+  const total = rows.length;
+  return {
+    projectId,
+    asOf: new Date().toISOString(),
+    scope: "main-tasks",
+    byStatus,
+    total,
+    doneRatio: total === 0 ? null : byStatus.done / total,
+    overdueCount,
+    blockedCount,
+  };
+}
+
+/** 任务来源引用。evidenceKey 用 `task:{id}`，稳定且不随标题改名而变。 */
+function taskSourceRef(projectId: string, taskId: string): SourceRef {
+  return {
+    sourceKind: "task",
+    sourceId: taskId,
+    projectId,
+    sourceHref: `/projects/${projectId}?task=${taskId}`,
+    evidenceKey: `task:${taskId}`,
+    availability: "available",
+  };
+}
+
+/**
+ * C-T09 需关注任务。kind 必传，因为「逾期」和「阻塞」判据完全不同，页面也要分开列。
+ * 逾期按 dueDate < 今天且未完成；阻塞按 isBlocked。两者都只数主任务，与 C-T08 同一口径。
+ */
+export async function listProjectTaskAttention(
+  actorId: string,
+  projectId: string,
+  filters: TaskAttentionFilters,
+): Promise<PageResult<TaskAttentionItem>> {
+  const access = await getProjectForUser(actorId, projectId);
+  if (!access) throw new ForbiddenError();
+
+  const { offset, limit } = normalizePage(filters);
+  const today = todayInBeijing();
+
+  const where = and(
+    eq(tasks.projectId, projectId),
+    isNull(tasks.parentTaskId),
+    ne(tasks.status, "done"),
+    filters.kind === "overdue"
+      ? // 没有日期不算逾期——这一点在 risk 标准里也写死了，两处必须一致
+        and(not(isNull(tasks.dueDate)), lt(tasks.dueDate, today))
+      : eq(tasks.isBlocked, true),
+  );
+
+  const rows = await db
+    .select({ id: tasks.id, title: tasks.title, dueDate: tasks.dueDate, blockedAt: tasks.blockedAt })
+    .from(tasks)
+    .where(where)
+    // 越该被看到的排越前：逾期久的在前，阻塞久的在前
+    .orderBy(asc(filters.kind === "overdue" ? tasks.dueDate : tasks.blockedAt), asc(tasks.id))
+    .limit(limit)
+    .offset(offset);
+
+  const [counted] = await db
+    .select({ total: sql<number>`count(*)::int` })
+    .from(tasks)
+    .where(where);
+
+  const items: TaskAttentionItem[] = rows.map((row) => ({
+    taskId: row.id,
+    title: row.title,
+    dueDate: row.dueDate,
+    blockedAt: row.blockedAt ? row.blockedAt.toISOString() : null,
+    sourceRef: taskSourceRef(projectId, row.id),
+  }));
+
+  return pageResult(items, counted?.total ?? 0, offset, limit);
 }
