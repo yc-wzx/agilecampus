@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+
 import { startDeliverableRevisionAction } from "./actions";
 
 /**
@@ -25,7 +25,6 @@ export function StartRevisionButton({
   const [pending, startTransition] = useTransition();
   const locked = useRef(false);
   const request = useRef(requestId);
-  const router = useRouter();
 
   return (
     <div className="space-y-2">
@@ -49,7 +48,7 @@ export function StartRevisionButton({
                 { requestId: request.current, expectedRevision: revision },
               );
               if (!result.ok) setError(result.error);
-              else router.refresh();
+
             } catch {
               setError("未能确认结果，请刷新核对；重试不会生成两个草稿。");
             } finally {

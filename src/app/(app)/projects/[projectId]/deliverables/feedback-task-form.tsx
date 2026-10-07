@@ -2,7 +2,7 @@
 
 import { useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+
 import { createTaskFromFeedbackAction } from "./actions";
 
 /**
@@ -48,7 +48,6 @@ export function FeedbackTaskForm({
   const [pending, startTransition] = useTransition();
   const locked = useRef(false);
   const request = useRef(requestId);
-  const router = useRouter();
 
   const taskId = createdTaskId ?? existingTaskId;
   const taskHref = taskId ? `/projects/${projectId}?task=${taskId}` : null;
@@ -125,7 +124,7 @@ export function FeedbackTaskForm({
             }
             setCreatedTaskId(result.data.taskId);
             setOpen(false);
-            router.refresh();
+
           } catch {
             setFormError(
               "未能确认创建结果，请刷新核对；重试会返回同一条修改任务，不会重复创建。",

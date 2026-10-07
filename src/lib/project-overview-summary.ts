@@ -107,9 +107,9 @@ export async function getProjectOverviewSummary(
     // D 已交付：真实项目成果统计
     queryPart("成果统计", () => getProjectDeliverableStats(actorId, projectId)),
     // F 待接入：项目置顶公告（F-A02 getPinnedAnnouncement）
-    pending<AnnouncementItem | null>("项目公告待接入（F-A02 getPinnedAnnouncement）"),
+    pending<AnnouncementItem | null>("项目公告功能尚未接入"),
     // E 待接入：最近活动（E-A02 listProjectActivities）
-    pending<PageResult<ActivityItem>>("最近活动待接入（E-A02 listProjectActivities）"),
+    pending<PageResult<ActivityItem>>("团队动态功能尚未接入"),
   ]);
 
   return {

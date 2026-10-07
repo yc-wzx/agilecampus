@@ -130,10 +130,8 @@ export function DeliverableEditor({
               setFormError(result.error);
               return;
             }
-            router.push(
-              `/projects/${projectId}/deliverables/${result.data.id}`,
-            );
-            router.refresh();
+            // Action 已重新验证并返回当前页；只在新建时导航，避免重复刷新竞态。
+            if (!deliverableId) router.push(`/projects/${projectId}/deliverables/${result.data.id}`);
           } catch {
             setFormError(
               "未能确认保存结果，请保持当前内容并重试；如提示冲突，请刷新核对。",

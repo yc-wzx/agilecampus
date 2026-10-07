@@ -77,7 +77,7 @@ export default async function ProjectOverviewPage({
               </p>
             ) : (
               <p className="mt-2 text-sm text-ink-faint">
-                还没有项目简介/目标——可由团队管理员在项目设置中补充。
+                还没有项目简介，请联系团队管理员补充。
               </p>
             )}
             <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-ink-faint">

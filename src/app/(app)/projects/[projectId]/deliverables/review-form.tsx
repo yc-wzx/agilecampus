@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+
 import { reviewDeliverableAction } from "./actions";
 
 /**
@@ -31,7 +31,6 @@ export function ReviewForm({
   const [pending, startTransition] = useTransition();
   const locked = useRef(false);
   const request = useRef(requestId);
-  const router = useRouter();
 
   return (
     <form
@@ -71,7 +70,7 @@ export function ReviewForm({
               return;
             }
             setDone(decision);
-            router.refresh();
+
           } catch {
             setFormError(
               "未能确认验收结果，请刷新核对；重复提交不会产生第二条反馈。",

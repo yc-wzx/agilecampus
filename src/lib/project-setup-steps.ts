@@ -38,7 +38,7 @@ export function deriveSetupSteps(input: SetupStepInput): SetupStep[] {
       key: "goal",
       label: "写下项目简介 / 目标",
       done: Boolean(description?.trim()),
-      hint: "让成员知道这个项目要做什么（目前需要团队管理员在项目设置中补充）",
+      hint: "让成员知道这个项目要做什么；项目简介编辑入口尚待接入",
     },
     {
       key: "milestone",
