@@ -158,4 +158,71 @@ body {
     font-weight: 600;
     letter-spacing: 0.01em;
   }
+
+  /* ------------------------------------------------------------------
+     任务详情侧边栏复用样式（B 交付交互约定，C 实现 TaskDetailPanel 时直接套用）
+     约定见 docs/b-task-sidebar-interaction.md：
+     桌面右侧栏、手机全屏、Esc 关闭、关闭后焦点回到触发卡片。
+     ------------------------------------------------------------------ */
+
+  /* 遮罩层：点击空白关闭；手机端与面板同宽，视觉上仍是全屏 */
+  .ac-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background-color: rgb(28 22 12 / 0.38);
+  }
+
+  /* 面板本体：手机全屏；≥768px 起固定为右侧栏 */
+  .ac-sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    z-index: 50;
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    flex-direction: column;
+    border-left: 1px solid var(--color-line);
+    background-color: var(--color-surface);
+    box-shadow: var(--shadow-pop);
+  }
+  @media (min-width: 768px) {
+    .ac-sidebar {
+      max-width: 30rem;
+    }
+  }
+
+  .ac-sidebar-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border-bottom: 1px solid var(--color-line);
+    padding: 0.875rem 1rem;
+  }
+
+  .ac-sidebar-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 1rem;
+  }
+
+  .ac-sidebar-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    border-top: 1px solid var(--color-line);
+    padding: 0.75rem 1rem;
+  }
+
+  /* 关闭侧边栏后回到触发卡片时的可见焦点，避免键盘用户丢失位置 */
+  .ac-focus-return {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
 }

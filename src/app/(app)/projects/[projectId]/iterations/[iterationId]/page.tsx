@@ -47,10 +47,10 @@ export default async function IterationDetailPage({
   const iterationNames = Object.fromEntries(iterations.items.map((it) => [it.id, it.name]));
 
   return (
-    <main className="mx-auto max-w-4xl space-y-8 py-8">
+    <main className="mx-auto max-w-4xl space-y-8 py-8 [overflow-wrap:anywhere]">
       <header>
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
+          <div className="min-w-0 max-w-full">
             <a
               href={`/projects/${projectId}/iterations`}
               className="text-xs text-ink-faint hover:underline"
