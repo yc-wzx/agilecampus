@@ -8,6 +8,12 @@ import {
   type MyTask,
   type TaskGroupKey,
 } from "@/lib/dashboard";
+import { listMyRevisionRequiredDeliverables } from "@/lib/deliverable-reporting";
+
+// 直接复用 D 的成果服务返回类型，不另建同义类型
+type RevisionItem = Awaited<
+  ReturnType<typeof listMyRevisionRequiredDeliverables>
+>["items"][number];
 
 const STATUS_LABEL: Record<string, string> = {
   todo: "待办",
@@ -55,6 +61,29 @@ function TaskRow({ task }: { task: MyTask }) {
   );
 }
 
+function RevisionRow({ item }: { item: RevisionItem }) {
+  return (
+    <li className="ac-card p-3">
+      <Link
+        href={`/projects/${item.projectId}/deliverables/${item.id}`}
+        className="break-words font-medium text-ink hover:text-primary hover:underline"
+      >
+        {item.title}
+      </Link>
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-faint">
+        <span className="min-w-0 break-words">{item.projectName}</span>
+        <span>第 {item.versionNumber} 版</span>
+        <span>{item.reviewedAt.slice(0, 10)}</span>
+      </div>
+      {item.comment && (
+        <p className="mt-1.5 break-words rounded bg-high-soft px-2 py-1 text-xs text-ink-soft">
+          教师意见：{item.comment}
+        </p>
+      )}
+    </li>
+  );
+}
+
 export default async function DashboardPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
@@ -78,6 +107,16 @@ export default async function DashboardPage() {
 
   const today = todayInShanghai();
   const groups = groupMyTasks(tasks, today);
+
+  // 成果来自 D 的模块，查询失败只影响本区块，不遮蔽任务列表
+  let revisions: RevisionItem[] = [];
+  let revisionsFailed = false;
+  try {
+    revisions = (await listMyRevisionRequiredDeliverables(session.user.id)).items;
+  } catch (e) {
+    console.error("[dashboard] 待修改成果查询失败", e);
+    revisionsFailed = true;
+  }
 
   return (
     <main className="mx-auto max-w-3xl space-y-6 py-8">
@@ -118,6 +157,29 @@ export default async function DashboardPage() {
           ))}
         </div>
       )}
+
+      <section className="space-y-2">
+        <h2 className="flex items-center gap-2 text-sm font-medium">
+          <span className="text-accent">需要处理的成果</span>
+          <span className="ac-badge bg-sunken text-ink-soft">{revisions.length}</span>
+        </h2>
+        <p className="px-1 text-xs text-ink-faint">
+          你提交过、教师要求修改的成果。通知标记已读不会让它们消失，重交后才会移出。
+        </p>
+        {revisionsFailed ? (
+          <div className="ac-card p-4 text-center text-sm text-high">
+            成果加载失败，请刷新页面重试。
+          </div>
+        ) : revisions.length === 0 ? (
+          <p className="px-1 text-sm text-ink-faint">暂无</p>
+        ) : (
+          <ul className="space-y-2">
+            {revisions.map((d) => (
+              <RevisionRow key={d.id} item={d} />
+            ))}
+          </ul>
+        )}
+      </section>
     </main>
   );
 }
