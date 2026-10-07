@@ -76,14 +76,13 @@ export default async function ProjectPage({
   return (
     <main className="mx-auto max-w-5xl space-y-8 py-8">
       <header>
-        <div className="flex items-start justify-between gap-3">
-          <h1 className="font-display text-2xl font-semibold text-ink">{project.name}</h1>
-          <a
-            href={`/projects/${projectId}/timeline`}
-            className="ac-btn-ghost whitespace-nowrap"
-          >
-            时间线
-          </a>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="min-w-0 break-words font-display text-2xl font-semibold text-ink">{project.name}</h1>
+          <nav className="flex flex-wrap items-center gap-2 whitespace-nowrap" aria-label="项目页面">
+            <a href={`/projects/${projectId}/overview`} className="ac-btn-ghost">概览</a>
+            <a href={`/projects/${projectId}/deliverables`} className="ac-btn-ghost">阶段成果</a>
+            <a href={`/projects/${projectId}/timeline`} className="ac-btn-ghost">时间线</a>
+          </nav>
         </div>
         {project.description && (
           <p className="mt-1 text-sm text-ink-soft">{project.description}</p>
