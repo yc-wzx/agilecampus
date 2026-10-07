@@ -536,3 +536,100 @@ export type ConfirmIterationDraftResult = {
   /** 同一草案重放时 true：返回原迭代，不再建第二轮。 */
   replayed: boolean;
 };
+
+/* ================================================================== *
+ * 以下类型由 D / E / F / B 模块按《P0—P2 统一接口标准（定稿）》
+ * 第 7、9.4、9.5、9.6、9.7 节追加。名字与字段是标准固定的，各模块直接引用，
+ * 不在各自页面重复声明。只允许追加，不修改上面 C 已发布的类型。
+ * ================================================================== */
+
+/** 第 7 节 D：项目成果统计。只统计当前正式提交的成果，不含初版草稿与历史版本。 */
+export type ProjectDeliverableStats = {
+  projectId: string;
+  projectStatus: "active" | "archived";
+  byStatus: { submitted: number; changes_requested: number; approved: number };
+  total: number;
+  /** 没有正式成果时为 null——「暂无正式提交」与「通过率 0%」是两回事。 */
+  approvedRatio: number | null;
+  scope: "current-submitted-deliverables";
+};
+
+/** 第 9.4 节 E：活动条目。metadata 只保存白名单数据，不收整段私有草稿。 */
+export type ActivityItem = {
+  id: string;
+  eventKey: string;
+  projectId: string;
+  actorId: string;
+  objectType:
+    | "task"
+    | "iteration"
+    | "deliverable"
+    | "feedback"
+    | "comment"
+    | "announcement";
+  objectId: string;
+  type: string;
+  summary: string;
+  occurredAt: string;
+  sourceRef: SourceRef;
+};
+
+/** 第 9.8 节 F：公告。纯文本，每个项目最多一条置顶。 */
+export type AnnouncementItem = {
+  id: string;
+  projectId: string;
+  title: string;
+  body: string;
+  authorId: string;
+  status: "published" | "withdrawn";
+  isPinned: boolean;
+  publishedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+};
+
+/** 第 9.6 节 E-K01：单条透明风险。规则、阈值、观察值都可解释，不做黑盒评分。 */
+export type RiskItem = {
+  ruleId:
+    | "overdue_task"
+    | "blocked_task"
+    | "iteration_progress"
+    | "inactive_project";
+  severity: "warning";
+  message: string;
+  threshold: Record<string, number | string>;
+  observedValue: Record<string, number | string>;
+  evaluatedAt: string;
+  sourceRefs: SourceRef[];
+  evidenceKeys: string[];
+};
+
+/** 第 9.6 节 E-K01 返回。缺数据时列入 unknownRules，不用 0 冒充。 */
+export type ProjectRiskResult = {
+  projectId: string;
+  asOf: string;
+  coverage: QueryCoverage;
+  items: RiskItem[];
+  unknownRules: string[];
+};
+
+/** 第 9.6 节：待处理事项（来源 D）。与风险分开展示，不混入风险评分。 */
+export type PendingItems = {
+  submittedCount: number;
+  changesRequestedCount: number;
+  sourceHref: string | null;
+};
+
+/** 第 9.6 节 A-G01：教师项目总览条目。B 提供的卡片只负责展示，不重算阈值。 */
+export type TeacherProjectOverview = {
+  projectId: string;
+  projectName: string;
+  taskStats: QueryPart<ProjectTaskStats>;
+  activeIteration: QueryPart<CurrentIteration | null>;
+  deliverableStats: QueryPart<ProjectDeliverableStats>;
+  lastActivity: QueryPart<ActivityItem | null>;
+  risks: QueryPart<ProjectRiskResult>;
+  pendingItems: QueryPart<PendingItems>;
+  asOf: string;
+};

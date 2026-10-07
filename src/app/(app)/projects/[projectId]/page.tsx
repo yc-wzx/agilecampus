@@ -14,6 +14,7 @@ import { NewTaskForm } from "./new-task-form";
 import { Board } from "./board";
 import { ChatPanel } from "./chat-panel";
 import { FilterBar } from "./filter-bar";
+import { ProjectNav } from "@/components/projects/project-nav";
 
 export default async function ProjectPage({
   params,
@@ -82,12 +83,7 @@ export default async function ProjectPage({
       <header>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <h1 className="min-w-0 break-words font-display text-2xl font-semibold text-ink">{project.name}</h1>
-          <nav className="flex flex-wrap items-center gap-2 whitespace-nowrap" aria-label="项目页面">
-            <a href={`/projects/${projectId}/iterations`} className="ac-btn-ghost">迭代</a>
-            <a href={`/projects/${projectId}/overview`} className="ac-btn-ghost">概览</a>
-            <a href={`/projects/${projectId}/deliverables`} className="ac-btn-ghost">阶段成果</a>
-            <a href={`/projects/${projectId}/timeline`} className="ac-btn-ghost">时间线</a>
-          </nav>
+          <ProjectNav projectId={projectId} current="tasks" />
         </div>
         {project.description && (
           <p className="mt-1 text-sm text-ink-soft">{project.description}</p>
