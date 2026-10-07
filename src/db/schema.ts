@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   pgEnum,
@@ -56,9 +57,12 @@ export const projectStatusEnum = pgEnum("project_status", ["active", "archived"]
 export const milestoneStatusEnum = pgEnum("milestone_status", ["open", "done"]);
 export const taskStatusEnum = pgEnum("task_status", ["todo", "doing", "done"]);
 export const taskPriorityEnum = pgEnum("task_priority", ["low", "medium", "high"]);
+// C / P0：迭代状态。开始 planned→active，结束 active→completed。
+export const iterationStatusEnum = pgEnum("iteration_status", ["planned", "active", "completed"]);
 export type ProjectStatus = (typeof projectStatusEnum.enumValues)[number];
 export type TaskStatus = (typeof taskStatusEnum.enumValues)[number];
 export type TaskPriority = (typeof taskPriorityEnum.enumValues)[number];
+export type IterationStatus = (typeof iterationStatusEnum.enumValues)[number];
 
 export const projects = pgTable(
   "projects",
@@ -92,6 +96,37 @@ export const milestones = pgTable(
   (t) => [index("milestones_project_idx").on(t.projectId)],
 );
 
+// C / P0：迭代（冲刺）。tasks.sprint_id 指向它。
+// 契约要求「一个项目最多一轮 active」——由下面的部分唯一索引在数据库层保证，并发也成立。
+export const iterations = pgTable(
+  "iterations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    goal: text("goal"),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    status: iterationStatusEnum("status").notNull().default("planned"),
+    // 乐观锁版本号：每次修改自增，调用方须回传 expectedRevision。
+    revision: integer("revision").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    // 每项目至多一轮 active。部分唯一索引让「并发开始两轮」在 DB 层只可能成功一个，
+    // 输的一方收到 23505，由服务层翻成友好中文错误。
+    uniqueIndex("iterations_one_active_per_project")
+      .on(t.projectId)
+      .where(sql`${t.status} = 'active'`),
+    index("iterations_project_idx").on(t.projectId),
+  ],
+);
+
 export const tasks = pgTable(
   "tasks",
   {
@@ -102,6 +137,9 @@ export const tasks = pgTable(
     milestoneId: uuid("milestone_id").references(() => milestones.id, {
       onDelete: "set null",
     }),
+    // C / P0：迭代归属。内部列名 sprint_id，对外 DTO 字段为 iterationId（仅此一份归属）。
+    // 迭代删除后置空 = 任务退回任务池，不连带删任务。
+    sprintId: uuid("sprint_id").references(() => iterations.id, { onDelete: "set null" }),
     // 子任务层级：自引用，空＝顶层任务。父任务删则子任务随之（cascade）。
     // 自引用外键须显式标注 AnyPgColumn，否则 TS 推断成环。
     parentTaskId: uuid("parent_task_id").references((): AnyPgColumn => tasks.id, {
@@ -109,6 +147,8 @@ export const tasks = pgTable(
     }),
     title: text("title").notNull(),
     description: text("description"),
+    // C / P0：验收标准。可选文本，旧任务为空；长度上限在服务层校验（10000 字）。
+    acceptanceCriteria: text("acceptance_criteria"),
     completionNote: text("completion_note"),
     assigneeId: uuid("assignee_id").references(() => users.id, {
       onDelete: "set null",
@@ -128,6 +168,8 @@ export const tasks = pgTable(
     index("tasks_project_idx").on(t.projectId),
     index("tasks_assignee_idx").on(t.assigneeId),
     index("tasks_parent_idx").on(t.parentTaskId),
+    // 任务池查询按 sprint_id IS NULL 过滤，且入轮/移出按 sprint_id 定位
+    index("tasks_sprint_idx").on(t.sprintId),
   ],
 );
 
@@ -370,3 +412,29 @@ export const deliverableOutbox = pgTable("deliverable_outbox", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   deliveredAt: timestamp("delivered_at", { withTimezone: true }),
 }, (t) => [index("deliverable_outbox_pending_idx").on(t.deliveredAt, t.createdAt)]);
+
+// C / P0：requestId 幂等账本。契约要求「新变更中使用 requestId 的操作都应保存服务端幂等凭据；
+// 相同标识与内容重放返回原操作结果，相同标识配不同内容返回 CONFLICT」。
+//
+// 不把 requestId 挂到 tasks 上：同一任务会被反复修改，一行只能存一个请求标识，那样是错的。
+// 改为按 (project, actor, operation, requestId) 记账，一次请求一行，result 存首次成功的返回体供回放。
+// 与 D 的 deliverable_* 系列互不重叠。
+export const writeRequests = pgTable(
+  "write_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    actorId: uuid("actor_id").notNull(),
+    operation: text("operation").notNull(),
+    requestId: uuid("request_id").notNull(),
+    requestHash: text("request_hash").notNull(),
+    result: jsonb("result").$type<unknown>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("write_requests_unique").on(t.projectId, t.actorId, t.operation, t.requestId),
+    index("write_requests_created_idx").on(t.createdAt),
+  ],
+);
