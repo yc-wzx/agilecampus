@@ -160,6 +160,9 @@ export type SubtaskProgress = {
   ratio: number | null;
 };
 
+/** C-T07：批量入口一次最多接受多少个父任务。 */
+export const SUBTASK_PROGRESS_MAX_PARENTS = 100;
+
 export type TaskAllowedActions = { edit: boolean; delete: boolean; comment: boolean };
 
 /** 侧边栏一次取回的聚合数据。对应固定服务 getTaskPanelData(actorId, projectId, taskId)。 */
@@ -331,3 +334,205 @@ export type UpdateIterationInput = {
 };
 
 export type IterationRevisionInput = { requestId: string; expectedRevision: number };
+
+/* --- 结束迭代、不可变历史与复盘（P1） --- */
+
+export const ITERATION_EVENT_TYPES = [
+  "created",
+  "started",
+  "updated",
+  "tasks_assigned",
+  "tasks_removed",
+  "completed",
+  "retrospective_saved",
+] as const;
+
+export type IterationEventType = (typeof ITERATION_EVENT_TYPES)[number];
+
+/** 结束预览里对任务版本的基线要求（C-I06 的 taskVersions）。 */
+export type IterationTaskVersion = { taskId: string; updatedAt: string };
+
+/** 未完成任务的去向：退回任务池，或转入同项目另一轮 planned/active 迭代。 */
+export type UnfinishedDisposition = {
+  taskId: string;
+  destination: "backlog" | "iteration";
+  targetIterationId?: string;
+};
+
+/** C-I06：结束前的确认表单数据。不落库，纯预览。 */
+export type IterationCompletionPreview = {
+  iterationRevision: number;
+  completedTasks: TaskSummary[];
+  unfinishedTasks: TaskSummary[];
+  /** 可作为未完成任务落点的一轮：同项目、未完成、且不是本轮。 */
+  eligibleNextIterations: Iteration[];
+  /** 预览时各任务的版本基线，结束时要原样回传。 */
+  taskVersions: IterationTaskVersion[];
+};
+
+/**
+ * C-I07 结束迭代。`unfinishedDisposition` 必须完整覆盖全部未完成主任务——
+ * 少一个都会被服务端拒绝，免得「没提到的任务」被静默冻结或静默退回。
+ */
+export type CompleteIterationInput = {
+  requestId: string;
+  expectedRevision: number;
+  taskVersions: IterationTaskVersion[];
+  unfinishedDisposition: UnfinishedDisposition[];
+};
+
+export type CompleteIterationResult = {
+  iteration: Iteration;
+  historyId: string;
+  movedTaskIds: string[];
+};
+
+/**
+ * C-I08 不可变历史快照。快照保存当时的任务标题/状态/归属/负责人/日期/阻塞与统计，
+ * 之后任务被改名、完成或删除都不重算历史。
+ */
+export type IterationHistory = {
+  historyId: string;
+  iterationId: string;
+  closedAt: string;
+  iterationSnapshot: Iteration;
+  taskSnapshots: TaskSummary[];
+  stats: IterationStats;
+  dispositions: UnfinishedDisposition[];
+};
+
+/* --- 复盘（P1） --- */
+
+export type SaveRetrospectiveInput = {
+  requestId: string;
+  /** 首次创建可不传；之后修改必传。 */
+  expectedRevision?: number;
+  wentWell?: string | null;
+  problems?: string | null;
+  nextActions?: string | null;
+};
+
+export type SaveRetrospectiveResult = { retrospective: Retrospective };
+
+/** C-I11：删除尚未开始的迭代，关联任务退回任务池，任务本身不删。 */
+export type DeletePlannedIterationResult = { deleted: true; iterationId: string };
+
+/* --- 我的活跃迭代（C-I13 / A 跨项目工作台） --- */
+
+export type MyActiveIteration = Iteration & {
+  projectName: string;
+  taskTotal: number;
+  doneCount: number;
+  doneRatio: number;
+  scope: "main-tasks";
+  asOf: string;
+  sourceHref: string;
+};
+
+/* --- 阻塞（P1） --- */
+
+export type SetTaskBlockedInput = {
+  requestId: string;
+  expectedUpdatedAt: string;
+  isBlocked: boolean;
+  /** isBlocked 为 true 时必填，1—2000 字；解除阻塞时忽略。 */
+  blockedReason?: string | null;
+};
+
+export type SetTaskBlockedResult = { task: TaskSummary };
+
+/* --- 项目级任务统计与需关注清单（P2） --- */
+
+/**
+ * C-T08。口径固定为主任务：子任务不计入，否则一个父任务会被算两次。
+ * total 为 0 时 doneRatio 是 null 而非 0——「没有任务」与「一个都没做完」是两回事。
+ */
+export type ProjectTaskStats = {
+  projectId: string;
+  asOf: string;
+  scope: "main-tasks";
+  byStatus: Record<TaskStatusValue, number>;
+  total: number;
+  doneRatio: number | null;
+  /** 未完成且 dueDate 早于北京时间今天。没有日期不算逾期。 */
+  overdueCount: number;
+  blockedCount: number;
+};
+
+export const TASK_ATTENTION_KINDS = ["overdue", "blocked"] as const;
+export type TaskAttentionKind = (typeof TASK_ATTENTION_KINDS)[number];
+
+/** C-T09。kind 必传：风险详情按「逾期」或「阻塞」分开列，混在一起页面没法分组。 */
+export type TaskAttentionFilters = PageInput & { kind: TaskAttentionKind };
+
+/** 需关注任务条目。字段固定，页面据此渲染并跳回来源。 */
+export type TaskAttentionItem = {
+  taskId: string;
+  title: string;
+  dueDate: string | null;
+  blockedAt: string | null;
+  sourceRef: SourceRef;
+};
+
+/* --- AI 迭代草案（P2 / C-AI01、C-AI02） ---
+ * 草案由 E 生成并持有存储（E-AI05/E-AI06）；C 只负责预览校验与事务确认。
+ * ------------------------------------------------------------------ */
+
+export const ITERATION_DRAFT_STATUSES = [
+  "pending",
+  "confirmed",
+  "cancelled",
+  "expired",
+] as const;
+export type IterationDraftStatus = (typeof ITERATION_DRAFT_STATUSES)[number];
+
+export type IterationDraftCandidateTask = {
+  taskId: string;
+  /** 生成草案时的任务版本基线，确认时要原样回传。 */
+  expectedUpdatedAt: string;
+  reason: string;
+};
+
+export type IterationDraft = {
+  id: string;
+  projectId: string;
+  createdById: string;
+  conversationId: string | null;
+  status: IterationDraftStatus;
+  revision: number;
+  name: string;
+  goal: string | null;
+  startDate: string;
+  endDate: string;
+  candidateTasks: IterationDraftCandidateTask[];
+  createdAt: string;
+  expiresAt: string;
+  sourceRefs: SourceRef[];
+};
+
+/** C-AI01：草案的校验结果。conflicts 逐条说清哪个任务为什么不能入轮。 */
+export type IterationDraftValidation = {
+  valid: boolean;
+  conflicts: { taskId: string; reason: string }[];
+};
+
+export type PreviewIterationDraftResult = {
+  draft: IterationDraft;
+  validation: IterationDraftValidation;
+  /** 各候选任务此刻的真实版本，供确认时回传。 */
+  currentTaskVersions: IterationTaskVersion[];
+};
+
+/** C-AI02：确认草案。一次事务建 planned 轮 + 归任务 + 标记草案已确认 + 事件。 */
+export type ConfirmIterationDraftInput = {
+  requestId: string;
+  expectedDraftRevision: number;
+  expectedTaskVersions: IterationTaskVersion[];
+};
+
+export type ConfirmIterationDraftResult = {
+  iteration: Iteration;
+  taskIds: string[];
+  /** 同一草案重放时 true：返回原迭代，不再建第二轮。 */
+  replayed: boolean;
+};
