@@ -63,12 +63,13 @@ export default async function DeliverablePage({
   const item = detail.deliverable;
   const access = await getProjectForUser(session.user.id, projectId);
   if (!access) notFound();
+  const canCreateTasks = access.role === "admin" || access.role === "student";
 
   const milestones: { id: string; title: string }[] = item.allowedActions.edit
     ? await listProjectMilestones(session.user.id, projectId)
     : [];
   const members: { id: string; name: string; role: string }[] =
-    detail.feedback.length > 0 ? await listTeamMembers(access.project.teamId) : [];
+    await listTeamMembers(access.project.teamId);
   const nameOf = (userId: string | null) =>
     members.find((member) => member.id === userId)?.name ?? "团队成员";
 
@@ -136,6 +137,7 @@ export default async function DeliverablePage({
         </p>
       )}
 
+      {(focusVersionId && !focusVersion || focusFeedbackId && !focusFeedback) && <p className="ac-card p-3 text-sm text-ink-soft">链接指向的版本或反馈不可用，请核对链接与访问权限。</p>}
       <header className="space-y-2">
         <h1 className="break-words font-display text-2xl font-semibold text-ink">
           {item.title}
@@ -312,6 +314,7 @@ export default async function DeliverablePage({
                     </p>
                     {CONVERTIBLE_DECISIONS.has(feedback.decision) && (
                       <FeedbackTaskForm
+                        canCreate={canCreateTasks}
                         projectId={projectId}
                         feedbackId={feedback.id}
                         versionLabel={`第 ${version.versionNumber} 版`}

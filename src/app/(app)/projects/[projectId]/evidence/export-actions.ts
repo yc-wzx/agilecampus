@@ -1,5 +1,6 @@
 "use server";
 
+import { z } from "zod";
 import { auth } from "@/lib/auth";
 import type { Result } from "@/contracts/p0-p2";
 import { DeliverableError } from "@/lib/deliverable";
@@ -18,6 +19,12 @@ import { getProjectForUser, listProjectMilestones } from "@/lib/project";
 import { listTeamMembers } from "@/lib/team";
 import type { DeliverableType } from "@/db/schema";
 
+const filtersSchema = z.strictObject({
+  kind: z.enum(["submission", "review", "milestone_feedback"]).optional(),
+  type: z.enum(["report", "presentation", "video", "survey", "code", "prototype", "demo", "other"]).optional(),
+  authorId: z.uuid().optional(), milestoneId: z.uuid().optional(),
+  fromDate: z.iso.date().optional(), toDate: z.iso.date().optional(),
+});
 const PAGE_SIZE = 100;
 /** 单次导出上限：达到上限必须如实标注 truncated，不能假装全量 */
 const EXPORT_LIMIT = 1000;
@@ -72,6 +79,8 @@ export async function exportDeliverableEvidenceMarkdownAction(
   }
 
   try {
+    z.uuid().parse(projectId);
+    filters = filtersSchema.parse(filters);
     const access = await getProjectForUser(session.user.id, projectId);
     if (!access) throw new ForbiddenError();
 
@@ -138,6 +147,7 @@ export async function exportDeliverableEvidenceMarkdownAction(
       total,
       truncated,
       generatedAt,
+      sourceOrigin: configuredOrigin(),
       typeLabel: (type) =>
         type ? (DELIVERABLE_LABELS[type as DeliverableType] ?? type) : "—",
       nameOf,
@@ -155,6 +165,7 @@ export async function exportDeliverableEvidenceMarkdownAction(
       },
     };
   } catch (error) {
+    if (error instanceof z.ZodError) return { ok: false, code: "VALIDATION", error: "导出筛选条件不合法" };
     if (error instanceof ForbiddenError) {
       return { ok: false, code: "FORBIDDEN", error: error.message };
     }
@@ -171,4 +182,12 @@ export async function exportDeliverableEvidenceMarkdownAction(
       error: "导出暂时不可用，请稍后重试。",
     };
   }
+}
+
+/** 来自部署配置，下载的 Markdown 在群里打开后仍能跳回网站来源。 */
+function configuredOrigin(): string | undefined {
+  const value = process.env.AGILECAMPUS_URL;
+  if (!value) return undefined;
+  try { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) ? url.origin : undefined; }
+  catch { return undefined; }
 }

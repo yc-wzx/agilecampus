@@ -169,6 +169,11 @@ describe("FeedbackTaskForm", () => {
     requestId: REQUEST_ID,
   };
 
+  it("教师仅可查看已关联任务，不显示创建任务入口", () => {
+    expect(renderToStaticMarkup(<FeedbackTaskForm {...base} canCreate={false} existingTaskId={null} existingTaskDeleted={false} />)).toBe("");
+    expect(renderToStaticMarkup(<FeedbackTaskForm {...base} canCreate={false} existingTaskId={TASK_ID} existingTaskDeleted={false} />)).toContain("打开任务查看来源反馈");
+  });
+
   it("还没有关联任务时给「转为修改任务」入口，不直接建任务", () => {
     const html = renderToStaticMarkup(
       <FeedbackTaskForm {...base} existingTaskId={null} existingTaskDeleted={false} />,

@@ -76,6 +76,17 @@ describe("buildDeliverableEvidenceMarkdown", () => {
     expect(markdown).toContain("决定：要求修改");
   });
 
+  it("导出来源使用网站绝对网址，文本不会生成 HTML", () => {
+    const { markdown } = buildDeliverableEvidenceMarkdown({
+      projectId: PROJECT_ID, projectName: "测试", filterSummary: [],
+      items: [{ ...SUBMISSION, description: "<script>alert(1)</script>" }], total: 1,
+      truncated: false, generatedAt: "2026-10-07T02:00:00.000Z", typeLabel, nameOf,
+      sourceOrigin: "https://campus.example.com",
+    });
+    expect(markdown).toContain("https://campus.example.com/api/projects/");
+    expect(markdown).not.toContain("<script>");
+  });
+
   it("每条都带来源链接与稳定证据键", () => {
     const { markdown } = build([SUBMISSION, REVIEW]);
     expect(markdown).toContain(

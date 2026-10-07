@@ -66,6 +66,12 @@ describe("exportDeliverableEvidenceMarkdownAction", () => {
     expect(result).toMatchObject({ ok: false, code: "UNAUTHENTICATED" });
   });
 
+  it("拒绝额外筛选字段", async () => {
+    const s = await scene();
+    mocks.auth.mockResolvedValue({ user: { id: s.student.id } });
+    expect(await exportDeliverableEvidenceMarkdownAction(s.project.id, { actorId: s.teacher.id } as never)).toMatchObject({ ok: false, code: "VALIDATION" });
+  });
+
   it("非团队成员返回 FORBIDDEN", async () => {
     const s = await scene();
     mocks.auth.mockResolvedValue({ user: { id: s.outsider.id } });

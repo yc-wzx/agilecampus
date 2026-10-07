@@ -23,6 +23,7 @@ export function FeedbackTaskForm({
   existingTaskId,
   existingTaskDeleted,
   requestId,
+  canCreate = true,
 }: {
   projectId: string;
   feedbackId: string;
@@ -33,6 +34,7 @@ export function FeedbackTaskForm({
   existingTaskId: string | null;
   existingTaskDeleted: boolean;
   requestId: string;
+  canCreate?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState(defaultTitle);
@@ -51,6 +53,8 @@ export function FeedbackTaskForm({
   const taskId = createdTaskId ?? existingTaskId;
   const taskHref = taskId ? `/projects/${projectId}?task=${taskId}` : null;
 
+  if (existingTaskDeleted) return <p className="text-xs text-ink-soft">原修改任务已删除。需要继续处理请走普通任务创建流程。</p>;
+
   if (taskHref) {
     return (
       <p className="text-xs text-ink-soft">
@@ -63,13 +67,7 @@ export function FeedbackTaskForm({
     );
   }
 
-  if (existingTaskDeleted) {
-    return (
-      <p className="text-xs text-ink-soft">
-        原修改任务已删除。需要继续处理请走普通任务创建流程。
-      </p>
-    );
-  }
+  if (!canCreate) return null;
 
   if (!open) {
     return (

@@ -48,6 +48,7 @@ export type EvidenceExportInput = {  projectId: string;
   total: number;
   truncated: boolean;
   generatedAt: string;
+  sourceOrigin?: string;
   /** 交付类型的中文名（"报告"/"PPT"…），由调用方注入，避免这里依赖业务映射 */
   typeLabel: (type: string | null) => string;
   nameOf: (userId: string | null) => string;
@@ -77,7 +78,7 @@ function beijingTime(value: string): string {
 /** Markdown 文本里避免把用户输入当成结构：只做最小转义，不引入 HTML。 */
 function inline(value: string | null | undefined): string {
   if (!value) return "—";
-  return value.replace(/\r?\n/g, " ").trim() || "—";
+  return value.replace(/\r?\n/g, " ").replace(/[\\`*_{}\[\]<>#!|]/g, (character) => `\\${character}`).trim() || "—";
 }
 
 export function buildDeliverableEvidenceMarkdown(
@@ -96,10 +97,10 @@ export function buildDeliverableEvidenceMarkdown(
   } = input;
 
   const lines: string[] = [];
-  lines.push(`# 成果过程证据清单 · ${projectName}`);
+  lines.push(`# 成果过程证据清单 · ${inline(projectName)}`);
   lines.push("");
   lines.push(`- 生成时间：${beijingTime(generatedAt)}（北京时间）`);
-  lines.push(`- 筛选条件：${filterSummary.length > 0 ? filterSummary.join("；") : "无（全部）"}`);
+  lines.push(`- 筛选条件：${filterSummary.length > 0 ? filterSummary.map(inline).join("；") : "无（全部）"}`);
   lines.push(
     "- 记录范围：正式提交、版本审核与里程碑反馈；**不含**未提交的私有草稿与历史版本以外的内容。",
   );
@@ -134,7 +135,7 @@ export function buildDeliverableEvidenceMarkdown(
       );
       lines.push(`- 时间：${beijingTime(item.occurredAt)}`);
       lines.push(
-        `- 身份：作者 ${nameOf(item.authorId)}；操作者 ${nameOf(item.actorId)}`,
+        `- 身份：作者 ${inline(nameOf(item.authorId))}；操作者 ${inline(nameOf(item.actorId))}`,
       );
       if (item.kind === "submission") {
         lines.push(`- 类型：${typeLabel(item.type)}`);
@@ -149,7 +150,7 @@ export function buildDeliverableEvidenceMarkdown(
         }
         lines.push(`- 意见：${inline(item.comment)}`);
       }
-      lines.push(`- 来源：${item.sourceHref}`);
+      lines.push(`- 来源：[打开原始记录](${input.sourceOrigin ? new URL(item.sourceHref, input.sourceOrigin).href : item.sourceHref})`);
       lines.push(`- 证据键：\`${item.evidenceKey}\``);
       lines.push("");
     }
@@ -162,7 +163,7 @@ export function buildDeliverableEvidenceMarkdown(
 
   lines.push("---");
   lines.push(
-    `项目：${projectName}（${projectId}）· 生成于 ${beijingTime(generatedAt)}`,
+    `项目：${inline(projectName)}（${projectId}）· 生成于 ${beijingTime(generatedAt)}`,
   );
 
   const stamp = generatedAt.replace(/[-:]/g, "").slice(0, 13);
