@@ -9,7 +9,9 @@
     "lint": "eslint",
     "db:push": "drizzle-kit push",
     "db:push:test": "dotenv -e .env.test -- drizzle-kit push",
-    "test": "dotenv -e .env.test -- vitest run"
+    "test": "dotenv -e .env.test -- vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^1.0.46",

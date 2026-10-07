@@ -10,6 +10,7 @@ import {
   doublePrecision,
   index,
   jsonb,
+  integer,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
@@ -269,3 +270,103 @@ export const taskLabels = pgTable(
     index("task_labels_label_idx").on(t.labelId),
   ],
 );
+
+// D / P0: additive tables only. Submitted content is retained in immutable snapshots.
+export const deliverableTypeEnum = pgEnum("deliverable_type", [
+  "report", "presentation", "video", "survey", "code", "prototype", "demo", "other",
+]);
+export const deliverableStatusEnum = pgEnum("deliverable_status", ["draft", "submitted", "approved", "changes_requested"]);
+export type DeliverableType = (typeof deliverableTypeEnum.enumValues)[number];
+
+export const deliverables = pgTable("deliverables", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  authorId: uuid("author_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  milestoneId: uuid("milestone_id").references(() => milestones.id, { onDelete: "set null" }),
+  title: text("title").notNull(),
+  type: deliverableTypeEnum("type").notNull(),
+  url: text("url").notNull().default(""),
+  description: text("description").notNull().default(""),
+  status: deliverableStatusEnum("status").notNull().default("draft"),
+  revision: integer("revision").notNull().default(1),
+  creationKey: uuid("creation_key").notNull(),
+  creationHash: text("creation_hash").notNull(),
+  // Private copy; public fields remain the latest submitted snapshot.
+  workingCopy: jsonb("working_copy").$type<{
+    title: string; type: DeliverableType; url: string; description: string;
+    milestoneId: string | null; requestId: string; baseRevision: number;
+  }>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }),
+}, (t) => [
+  index("deliverables_project_idx").on(t.projectId),
+  index("deliverables_author_idx").on(t.authorId),
+  uniqueIndex("deliverables_creation_unique").on(t.projectId, t.authorId, t.creationKey),
+]);
+
+export const deliverableVersions = pgTable("deliverable_versions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  deliverableId: uuid("deliverable_id").notNull().references(() => deliverables.id, { onDelete: "cascade" }),
+  versionNumber: integer("version_number").notNull(),
+  draftRevision: integer("draft_revision").notNull(),
+  submissionKey: uuid("submission_key").notNull(),
+  // Snapshot identifiers intentionally have no FK: deleting a milestone must not rewrite history.
+  authorId: uuid("author_id").notNull(),
+  submittedById: uuid("submitted_by_id").notNull(),
+  milestoneId: uuid("milestone_id"),
+  milestoneTitle: text("milestone_title"),
+  title: text("title").notNull(),
+  type: deliverableTypeEnum("type").notNull(),
+  url: text("url").notNull(),
+  description: text("description").notNull(),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("deliverable_versions_number_unique").on(t.deliverableId, t.versionNumber),
+  uniqueIndex("deliverable_versions_submission_unique").on(t.deliverableId, t.submissionKey),
+]);
+
+export const deliverableFeedbackDecision = pgEnum("deliverable_feedback_decision", ["approved", "changes_requested", "comment"]);
+export const deliverableFeedback = pgTable("deliverable_feedback", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  deliverableId: uuid("deliverable_id").references(() => deliverables.id, { onDelete: "cascade" }),
+  versionId: uuid("version_id").references(() => deliverableVersions.id, { onDelete: "cascade" }),
+  milestoneId: uuid("milestone_id").references(() => milestones.id, { onDelete: "set null" }),
+  milestoneTitle: text("milestone_title"),
+  // Historical identity survives deletion of the live milestone (no FK by design).
+  milestoneSnapshotId: uuid("milestone_snapshot_id"),
+  reviewerId: uuid("reviewer_id").notNull(),
+  decision: deliverableFeedbackDecision("decision").notNull(),
+  comment: text("comment").notNull(),
+  requestId: uuid("request_id").notNull(),
+  requestHash: text("request_hash").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("deliverable_feedback_version_unique").on(t.versionId),
+  uniqueIndex("deliverable_feedback_request_unique").on(t.projectId, t.reviewerId, t.requestId),
+  index("deliverable_feedback_project_idx").on(t.projectId),
+]);
+
+export const feedbackTaskLinks = pgTable("feedback_task_links", {
+  feedbackId: uuid("feedback_id").primaryKey().references(() => deliverableFeedback.id, { onDelete: "cascade" }),
+  taskId: uuid("task_id").references(() => tasks.id, { onDelete: "set null" }),
+  originalTaskId: uuid("original_task_id").notNull(),
+  createdById: uuid("created_by_id").notNull(),
+  requestId: uuid("request_id").notNull(),
+  requestHash: text("request_hash").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("feedback_task_links_task_idx").on(t.taskId)]);
+
+// D's durable handoff; E/F still own activity records and notification delivery.
+export const deliverableOutbox = pgTable("deliverable_outbox", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  eventKey: text("event_key").notNull().unique(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  actorId: uuid("actor_id").notNull(),
+  type: text("type").notNull(),
+  payload: jsonb("payload").$type<Record<string, string>>().notNull(),
+  recipientIds: jsonb("recipient_ids").$type<string[]>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+}, (t) => [index("deliverable_outbox_pending_idx").on(t.deliveredAt, t.createdAt)]);
