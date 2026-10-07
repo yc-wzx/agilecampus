@@ -1,6 +1,7 @@
 "use client";
 
 import { useOptimistic, useState, useTransition } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   DndContext,
   PointerSensor,
@@ -11,6 +12,7 @@ import {
 } from "@dnd-kit/core";
 import { deriveColumns, type BoardColumn, type ColumnPatch } from "@/lib/board-columns";
 import type { GroupBy } from "@/lib/board-filters";
+import { TaskDetailPanel, type TaskPanelState } from "@/components/tasks/task-detail-panel";
 import { moveTaskAction } from "./actions";
 import { TaskCard, type Option } from "./task-card";
 
@@ -32,23 +34,17 @@ export type BoardTask = {
 function Column({
   column,
   tasks,
-  projectId,
   canWrite,
-  members,
-  milestones,
   allTasks,
-  allLabels,
   dependencies,
+  onOpenTask,
 }: {
   column: BoardColumn;
   tasks: BoardTask[];
-  projectId: string;
   canWrite: boolean;
-  members: Option[];
-  milestones: Option[];
   allTasks: { id: string; title: string }[];
-  allLabels: Option[];
   dependencies: { predecessorId: string; successorId: string }[];
+  onOpenTask: (taskId: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: column.key });
 
@@ -67,13 +63,10 @@ function Column({
         <TaskCard
           key={t.id}
           task={t}
-          projectId={projectId}
           canWrite={canWrite}
-          members={members}
-          milestones={milestones}
           allTasks={allTasks}
-          allLabels={allLabels}
           dependencies={dependencies}
+          onOpen={() => onOpenTask(t.id)}
         />
       ))}
     </div>
@@ -90,6 +83,7 @@ export function Board({
   allTasks,
   allLabels,
   dependencies,
+  panel,
 }: {
   projectId: string;
   tasks: BoardTask[];
@@ -100,6 +94,8 @@ export function Board({
   allTasks: { id: string; title: string }[];
   allLabels: Option[];
   dependencies: { predecessorId: string; successorId: string }[];
+  /** 服务端按 ?task= 取好的详情数据；为 null 表示面板未打开。 */
+  panel: TaskPanelState | null;
 }) {
   const [, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -113,6 +109,34 @@ export function Board({
   );
 
   const columns = deriveColumns(groupBy, { members, milestones });
+
+  // 详情侧边栏是**全局单例**：不能 30 张卡片各挂一个。
+  // 它由 URL 的 ?task= 驱动——打开就是往 URL 写 task，关闭就是删掉它。
+  // 服务端据 ?task= 取好数据经 panel 传进来，所以面板自己不用取数，刷新/后退/分享链接都自然正确。
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  function writeTaskQuery(taskId: string | null) {
+    const params = new URLSearchParams(searchParams.toString());
+    if (taskId) params.set("task", taskId);
+    else params.delete("task");
+    const qs = params.toString();
+    startTransition(() => {
+      // replace 而非 push：开开关关面板不该堆满历史记录，但筛选参数要保留
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    });
+  }
+
+  const openPanel = (taskId: string) => writeTaskQuery(taskId);
+  const closePanel = () => writeTaskQuery(null);
+  // 保存成功与版本冲突后都重新向服务端取数，顺带刷新看板与筛选计数。
+  const reload = () => startTransition(() => router.refresh());
+
+  // URL 要的任务和服务端已送来的不是同一个 = 还在路上。纯派生，不另外维护 pending 标志，
+  // 这样拖拽排序引起的 transition 不会误报成「载入任务详情」。
+  const urlTaskId = searchParams.get("task");
+  const panelLoading = urlTaskId !== null && panel?.taskId !== urlTaskId;
 
   function handleDragEnd(event: DragEndEvent) {
     const taskId = String(event.active.id);
@@ -134,6 +158,7 @@ export function Board({
   return (
     <DndContext id={`board-${projectId}`} sensors={sensors} onDragEnd={handleDragEnd}>
       {error && <p className="text-sm text-high">{error}</p>}
+      {panelLoading && <p className="text-xs text-ink-faint">载入任务详情…</p>}
       {/* 列数随分组维度而变，故横向滚动而非固定三栏 */}
       <div className="flex gap-4 overflow-x-auto pb-2">
         {columns.map((col) => (
@@ -141,16 +166,27 @@ export function Board({
             key={col.key}
             column={col}
             tasks={optimisticTasks.filter((t) => col.matches(t))}
-            projectId={projectId}
             canWrite={canWrite}
-            members={members}
-            milestones={milestones}
             allTasks={allTasks}
-            allLabels={allLabels}
             dependencies={dependencies}
+            onOpenTask={openPanel}
           />
         ))}
       </div>
+
+      {panel && (
+        <TaskDetailPanel
+          projectId={projectId}
+          state={panel}
+          canWrite={canWrite}
+          members={members}
+          milestones={milestones}
+          allTasks={allTasks}
+          allLabels={allLabels}
+          onClose={closePanel}
+          onReload={reload}
+        />
+      )}
     </DndContext>
   );
 }
