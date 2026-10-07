@@ -1,80 +1,35 @@
 import Link from "next/link";
+import { notFound, redirect } from "next/navigation";
+import { z } from "zod";
+import { auth } from "@/lib/auth";
+import { getProjectForUser } from "@/lib/project";
+import { listProjectDeliverables } from "@/lib/deliverable";
+import { DELIVERABLE_LABELS } from "@/lib/deliverable-labels";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-
-export default async function DeliverablesPage() {
-  // 开发样例：等 D 同学提交 src/lib/deliverable.ts 后替换为真实查询
-  const mockDeliverables = [
-    {
-      id: "mock-1",
-      title: "用户调研报告",
-      type: "报告",
-      status: "submitted",
-      authorId: "me",
-    },
-    {
-      id: "mock-2",
-      title: "需求分析 PPT",
-      type: "PPT",
-      status: "approved",
-      authorId: "me",
-    },
-    {
-      id: "mock-3",
-      title: "高保真原型",
-      type: "原型",
-      status: "changes_requested",
-      authorId: "me",
-    },
-  ];
-
-  return (
-    <div className="mx-auto max-w-4xl space-y-6 py-8">
-      <div className="flex items-center justify-between">
-        <h1 className="font-display text-2xl font-semibold text-ink">
-          阶段成果
-        </h1>
-        <button className="ac-btn-primary">新建成果</button>
-      </div>
-
-      {mockDeliverables.length === 0 ? (
-        <div className="ac-card p-12 text-center">
-          <p className="text-sm text-ink-soft">暂无成果</p>
-        </div>
-      ) : (
-        <div className="ac-card overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-sunken text-left text-xs text-ink-soft">
-              <tr>
-                <th className="px-4 py-3 font-medium">标题</th>
-                <th className="px-4 py-3 font-medium">类型</th>
-                <th className="px-4 py-3 font-medium">状态</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-sunken">
-              {mockDeliverables.map((item) => (
-                <tr key={item.id} className="hover:bg-sunken/50">
-                  <td className="px-4 py-3">
-                    <Link
-                      href={`#`}
-                      className="font-medium text-ink hover:text-primary"
-                    >
-                      {item.title}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-ink-soft">{item.type}</td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={item.status} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <p className="text-center text-xs text-ink-faint">
-        当前为开发样例，等待 D 同学接入真实成果接口后替换。
-      </p>
+export default async function DeliverablesPage({ params }: { params: Promise<{ projectId: string }> }) {
+  const { projectId } = await params;
+  const session = await auth();
+  if (!session?.user?.id) redirect("/login");
+  if (!z.uuid().safeParse(projectId).success) notFound();
+  const access = await getProjectForUser(session.user.id, projectId);
+  if (!access) notFound();
+  const items = await listProjectDeliverables(session.user.id, projectId);
+  return <main className="mx-auto max-w-4xl space-y-6 py-8">
+    <nav className="flex flex-wrap gap-4 text-sm text-primary">
+      <Link href={`/projects/${projectId}/overview`}>项目概览</Link>
+      <Link href={`/projects/${projectId}`}>任务看板</Link>
+    </nav>
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <h1 className="font-display text-2xl font-semibold">阶段成果</h1>
+      {access.role !== "teacher" && <Link href={`/projects/${projectId}/deliverables/new`} className="ac-btn">新建成果</Link>}
     </div>
-  );
+    {!items.length && <p className="ac-card p-8 text-center text-sm text-ink-soft">暂无可查看的成果。</p>}
+    <ul className="space-y-3">{items.map((item) => <li key={item.id} className="ac-card flex flex-wrap items-center justify-between gap-3 p-4">
+      <div className="min-w-0 flex-1">
+        <Link href={`/projects/${projectId}/deliverables/${item.id}`} className="break-words font-medium text-ink hover:text-primary hover:underline">{item.title}</Link>
+        <p className="mt-1 text-sm text-ink-soft">{DELIVERABLE_LABELS[item.type]}</p>
+      </div>
+      <StatusBadge status={item.status} />
+    </li>)}</ul>
+  </main>;
 }

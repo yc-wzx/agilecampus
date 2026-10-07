@@ -24,13 +24,13 @@ export function ProjectCard({
       href={href ?? `/projects/${projectId}`}
       className="block rounded-lg border border-slate-200 bg-white p-5 transition hover:border-slate-300 hover:shadow-sm"
     >
-      <h3 className="text-sm font-medium text-slate-900">{name}</h3>
+      <h3 className="break-words text-sm font-medium text-slate-900">{name}</h3>
       {description && (
         <p className="mt-1 line-clamp-2 text-xs text-slate-500">
           {description}
         </p>
       )}
-      <div className="mt-3 flex items-center gap-4 text-xs text-slate-500">
+      <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-slate-500">
         <span>
           任务 {taskDone}/{taskTotal}
         </span>
