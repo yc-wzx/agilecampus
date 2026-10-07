@@ -139,6 +139,10 @@ export async function updateTask(
     }
   }
 
+  const startDate = patch.startDate === undefined ? task.startDate : patch.startDate;
+  const dueDate = patch.dueDate === undefined ? task.dueDate : patch.dueDate;
+  if (startDate && dueDate && startDate > dueDate) throw new AppError("任务开始日期不能晚于截止日期");
+
   if (patch.assigneeId) await validateAssignee(access.project.teamId, patch.assigneeId);
   if (patch.milestoneId) await validateMilestone(task.projectId, patch.milestoneId);
 

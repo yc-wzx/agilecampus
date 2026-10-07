@@ -52,7 +52,7 @@ export const SUMMARY_COLS = {
   sortOrder: tasks.sortOrder,
   milestoneId: tasks.milestoneId,
   parentTaskId: tasks.parentTaskId,
-  sprintId: tasks.sprintId,
+  sprintId: sql<string | null>`coalesce(${tasks.sprintId}, (select p.sprint_id from tasks p where p.id = ${tasks.parentTaskId} and p.project_id = ${tasks.projectId}))`,
   assigneeId: tasks.assigneeId,
   assigneeName: users.name,
   completionNote: tasks.completionNote,
@@ -446,7 +446,7 @@ export async function setTaskBlocked(
           .set({
             isBlocked: input.isBlocked,
             blockedReason: input.isBlocked ? reason : null,
-            blockedAt: input.isBlocked ? sql`now()` : null,
+            blockedAt: input.isBlocked ? sql`coalesce(${tasks.blockedAt}, now())` : null,
             updatedAt: sql`now()`,
           })
           .where(eq(tasks.id, taskId));

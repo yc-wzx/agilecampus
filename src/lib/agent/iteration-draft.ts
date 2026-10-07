@@ -1,7 +1,7 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { db } from "@/db";
 import type { DbTx } from "@/db";
-import { iterationDrafts, tasks } from "@/db/schema";
+import { iterationDrafts, tasks, writeRequests } from "@/db/schema";
 import { PAGE_LIMIT_MAX } from "@/contracts/p0-p2";
 import type {
   ConfirmIterationDraftInput,
@@ -14,8 +14,10 @@ import type {
   TaskSummary,
 } from "@/contracts/p0-p2";
 import { ConflictError, ForbiddenError, NotFoundError } from "@/lib/errors";
-import { getIterationDetail, createIterationWithTasksTx } from "@/lib/iteration";
+import { createIterationWithTasksTx } from "@/lib/iteration";
 import { getProjectForUser } from "@/lib/project";
+import { lockTaskWriteAccess } from "@/lib/task-write-access";
+import { claimWriteRequest, finishWriteRequest, hashRequest } from "@/lib/write-request";
 import { requireTaskWrite } from "@/lib/task";
 import { listBacklog } from "@/lib/task-contract";
 
@@ -78,7 +80,7 @@ function candidateIds(row: DraftRow): string[] {
 
 /**
  * 读一条草案并校验归属。草案属于项目，能看项目才看得到草案。
- * 创建者的身份不在这里卡——同项目其他成员看草案是合理的（评论、复核）。
+ * 草案可能包含私有 AI 对话信息，只允许创建者读取。
  */
 async function loadDraft(
   actorId: string,
@@ -92,16 +94,14 @@ async function loadDraft(
     .select()
     .from(iterationDrafts)
     .where(and(eq(iterationDrafts.id, draftId), eq(iterationDrafts.projectId, projectId)));
-  if (!row) throw new NotFoundError("草案不存在");
+  if (!row || row.createdById !== actorId) throw new NotFoundError("草案不存在或无权访问");
   return row;
 }
 
 /**
  * C-AI01 预览：草案能不能确认、每个候选任务此刻的版本。
  *
- * 只校验「这个任务还能不能进新一轮」，不校验版本漂移——草案是几分钟前生成的，
- * 期间任务被改过很正常，那不该拦人；真正要紧的是**确认那一刻**拿到的是最新版本，
- * 所以这里把 currentTaskVersions 交出去，由调用方原样回传给 C-AI02。
+ * 同时校验草案生成时的任务版本；不能用重新预览悄悄接受已过时的 AI 方案。
  *
  * 草案本身的问题（已取消/已过期/名称为空/日期倒置）没有 taskId 可挂，
  * 统一表现为 valid=false 且 conflicts 为空——详见 IterationDraftValidation 的注释。
@@ -143,6 +143,7 @@ export async function previewIterationDraft(
         .where(and(eq(tasks.projectId, projectId), inArray(tasks.id, ids)))
     : [];
   const byId = new Map(rows.map((t) => [t.id, t]));
+  const baseline = new Map((row.candidateTasks as IterationDraftCandidateTask[]).map((c) => [c.taskId, c.expectedUpdatedAt]));
 
   const conflicts: IterationDraftValidation["conflicts"] = [];
   const currentTaskVersions: IterationTaskVersion[] = [];
@@ -151,6 +152,9 @@ export async function previewIterationDraft(
     if (!task) {
       conflicts.push({ taskId, reason: "任务不存在或已被删除" });
       continue;
+    }
+    if (new Date(baseline.get(taskId) ?? "").getTime() !== task.updatedAt.getTime()) {
+      conflicts.push({ taskId, reason: "任务在草案生成后已被修改，请更新或重新生成草案" });
     }
     if (task.status === "done") {
       conflicts.push({ taskId, reason: "任务已完成，不必再排进新一轮" });
@@ -176,10 +180,7 @@ export async function previewIterationDraft(
 /**
  * C-AI02 确认草案。
  *
- * 关于幂等：定稿 §9.1 要求带 requestId 的写操作存幂等凭据。这一条不走 write_requests 账本，
- * 因为**草案行本身就是更强的凭据**——确认成功时在同一事务里把 status 置为 confirmed 并记下
- * 建出的 iterationId。任何重放（换不换 requestId 都一样）都会先撞上 status，直接返回原迭代，
- * 不可能建出第二轮。账本在这里只会多一层永不命中的分支，所以不加。
+ * 使用 write_requests 保存原始确认结果；重放仍检查当前权限并核对请求内容。
  *
  * 确认全程只做一件事：建一轮 planned 并归任务。不自动开始，也不替教师审核。
  * 冲突一律整体拒绝、不部分写入——调用方刷新后重新确认。
@@ -193,25 +194,17 @@ export async function confirmIterationDraft(
   // 定稿：确认时仍需 student/admin 的任务/迭代写权限，光「是创建者」不够。
   await requireTaskWrite(actorId, projectId);
 
-  const outcome = await db.transaction(async (tx) =>
-    confirmInTx(tx, actorId, projectId, draftId, input),
-  );
-
-  // 重放分支在事务外补一次读取：拿不到 iterationId 就不是重放，直接把结果返回。
-  if (!("replayIterationId" in outcome)) return outcome;
-
-  const detail = await getIterationDetail(actorId, projectId, outcome.replayIterationId);
-  return {
-    iteration: detail.iteration,
-    taskIds: detail.tasks.map((t) => t.id),
-    replayed: true,
-  };
+  return db.transaction(async (tx) => {
+    await lockTaskWriteAccess(tx, actorId, projectId);
+    const { requestId, ...content } = input;
+    const requestHash = hashRequest({ draftId, ...content });
+    const key = { projectId, actorId, operation: "iteration.confirm_draft", requestId };
+    const claim = await claimWriteRequest(tx, key, requestHash);
+    if (claim.replay) return { ...(claim.result as ConfirmIterationDraftResult), replayed: true };
+    const result = await confirmInTx(tx, actorId, projectId, draftId, input, requestHash);
+    return finishWriteRequest(tx, claim.id, result);
+  });
 }
-
-type ConfirmOutcome = ConfirmIterationDraftResult | ConfirmIterationDraftFailure;
-
-/** 事务内只判断「是不是重放」；重放要在事务外补读一次迭代详情。 */
-type ConfirmIterationDraftFailure = { replayIterationId: string };
 
 async function confirmInTx(
   tx: DbTx,
@@ -219,7 +212,8 @@ async function confirmInTx(
   projectId: string,
   draftId: string,
   input: ConfirmIterationDraftInput,
-): Promise<ConfirmOutcome> {
+  requestHash: string,
+): Promise<ConfirmIterationDraftResult> {
   const [row] = await tx
     .select()
     .from(iterationDrafts)
@@ -237,7 +231,12 @@ async function confirmInTx(
     if (!row.confirmedIterationId) {
       throw new ConflictError("草案状态异常，请重新生成");
     }
-    return { replayIterationId: row.confirmedIterationId };
+    const [original] = await tx.select({ result: writeRequests.result }).from(writeRequests).where(and(
+      eq(writeRequests.projectId, projectId), eq(writeRequests.actorId, actorId),
+      eq(writeRequests.operation, "iteration.confirm_draft"), eq(writeRequests.requestHash, requestHash), isNotNull(writeRequests.result),
+    ));
+    if (!original?.result) throw new ConflictError("草案已经确认，请查看原迭代");
+    return { ...(original.result as ConfirmIterationDraftResult), replayed: true };
   }
   if (row.status === "cancelled") throw new ConflictError("草案已取消，不能确认");
   // status 可能已经被预览落成 expired，也可能刚过期还没落——两种都算过期
@@ -250,6 +249,12 @@ async function confirmInTx(
   }
 
   const ids = candidateIds(row);
+  const baseline = new Map((row.candidateTasks as IterationDraftCandidateTask[]).map((c) => [c.taskId, c.expectedUpdatedAt]));
+  for (const version of input.expectedTaskVersions) {
+    if (new Date(baseline.get(version.taskId) ?? "").getTime() !== new Date(version.updatedAt).getTime()) {
+      throw new ConflictError("任务在草案生成后已被修改，请更新或重新生成草案，然后请重新预览");
+    }
+  }
   const versionOf = new Map(input.expectedTaskVersions.map((v) => [v.taskId, v.updatedAt]));
   if (versionOf.size !== ids.length || ids.some((id) => !versionOf.has(id))) {
     throw new ConflictError("草案中的任务已被改动，请重新预览");

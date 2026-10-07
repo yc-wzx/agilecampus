@@ -18,7 +18,7 @@ function describeError(error: unknown): { code: ErrorCode; error: string } {
     return { code: "VALIDATION", error: error.issues[0]?.message ?? "输入不合法" };
   }
   if (error instanceof ForbiddenError) return { code: "FORBIDDEN", error: error.message };
-  if (error instanceof NotFoundError) return { code: "NOT_FOUND", error: error.message };
+  if (error instanceof NotFoundError) return { code: "FORBIDDEN", error: error.message };
   if (error instanceof ConflictError) return { code: "CONFLICT", error: error.message };
   if (error instanceof ValidationError) return { code: "VALIDATION", error: error.message };
   // 服务层用裸 AppError 表达领域规则（「负责人不是团队成员」之类），消息可直接展示

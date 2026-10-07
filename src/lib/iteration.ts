@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import type { DbTx } from "@/db";
 import {
@@ -47,6 +47,7 @@ import { normalizePage, pageResult } from "./pagination";
 import { getProjectForUser } from "./project";
 import { requireTaskWrite } from "./task";
 import { SUMMARY_COLS, backlogWhere, toTaskSummary, type TaskRow } from "./task-contract";
+import { lockTaskWriteAccess } from "./task-write-access";
 import { runIdempotent } from "./write-request";
 
 // C / P0：迭代服务（定稿 9.3）。
@@ -235,12 +236,7 @@ async function iterationStats(taskIds: string[]): Promise<IterationStats> {
 }
 
 async function loadIterationTasks(projectId: string, iterationId: string): Promise<TaskRow[]> {
-  return db
-    .select(SUMMARY_COLS)
-    .from(tasks)
-    .leftJoin(users, eq(tasks.assigneeId, users.id))
-    .where(and(eq(tasks.projectId, projectId), eq(tasks.sprintId, iterationId)))
-    .orderBy(asc(tasks.sortOrder), asc(tasks.id));
+  return loadIterationTaskRows(db, projectId, iterationId);
 }
 
 export async function getIterationDetail(
@@ -440,6 +436,7 @@ export async function createIterationWithTasksTx(
     expectedTaskVersions?: IterationTaskVersion[];
   },
 ): Promise<{ iteration: Iteration; assignedTaskIds: string[] }> {
+  await lockTaskWriteAccess(tx, actorId, projectId);
   if (!input.name.trim()) throw new ValidationError("迭代名称不能为空");
   assertDateRange(input.startDate, input.endDate);
 
@@ -645,7 +642,7 @@ async function moveTasks(
   const touched: string[] = [];
   for (const ref of input.tasks) {
     const [task] = await tx
-      .select({ id: tasks.id, sprintId: tasks.sprintId, updatedAt: tasks.updatedAt })
+      .select({ id: tasks.id, sprintId: tasks.sprintId, updatedAt: tasks.updatedAt, status: tasks.status, parentTaskId: tasks.parentTaskId })
       .from(tasks)
       .where(and(eq(tasks.id, ref.taskId), eq(tasks.projectId, projectId)))
       .for("update");
@@ -657,6 +654,9 @@ async function moveTasks(
     }
 
     if (mode === "assign") {
+      if (task.status === "done" || task.parentTaskId !== null) {
+        throw new ConflictError("只能选择未完成的主任务加入迭代");
+      }
       // 一个任务只归属一轮迭代。已在轮内的任务要移出后才能再入另一轮。
       if (task.sprintId && task.sprintId !== iterationId) {
         throw new ConflictError("该任务已属于另一轮迭代");
@@ -820,13 +820,18 @@ async function loadIterationTaskRows(
   exec: DbTx | typeof db,
   projectId: string,
   iterationId: string,
+  lock = false,
 ): Promise<TaskRow[]> {
-  return exec
-    .select(SUMMARY_COLS)
+  const query = exec
+    .select({ ...SUMMARY_COLS, sprintId: sql<string>`${iterationId}` })
     .from(tasks)
     .leftJoin(users, eq(tasks.assigneeId, users.id))
-    .where(and(eq(tasks.projectId, projectId), eq(tasks.sprintId, iterationId)))
+    .where(and(eq(tasks.projectId, projectId), or(
+      eq(tasks.sprintId, iterationId),
+      inArray(tasks.parentTaskId, exec.select({ id: tasks.id }).from(tasks).where(and(eq(tasks.projectId, projectId), eq(tasks.sprintId, iterationId)))),
+    )))
     .orderBy(asc(tasks.sortOrder), asc(tasks.id));
+  return lock ? query.for("update", { of: tasks }) : query;
 }
 
 /** 可作为未完成任务落点的一轮：同项目、未完成、不是本轮。 */
@@ -874,14 +879,15 @@ export async function previewIterationCompletion(
     .where(and(eq(iterations.id, iterationId), eq(iterations.projectId, projectId)));
   if (!row) throw new NotFoundError("迭代不存在");
 
-  const mainTasks = mainTasksOf(await loadIterationTaskRows(db, projectId, iterationId));
+  const rows = await loadIterationTaskRows(db, projectId, iterationId);
+  const mainTasks = mainTasksOf(rows);
 
   return {
     iterationRevision: row.revision,
     completedTasks: mainTasks.filter((t) => t.status === "done").map(toTaskSummary),
     unfinishedTasks: mainTasks.filter((t) => t.status !== "done").map(toTaskSummary),
     eligibleNextIterations: await eligibleNextIterations(db, projectId, iterationId),
-    taskVersions: mainTasks.map((t) => ({ taskId: t.id, updatedAt: t.updatedAt.toISOString() })),
+    taskVersions: rows.map((t) => ({ taskId: t.id, updatedAt: t.updatedAt.toISOString() })),
   };
 }
 
@@ -915,15 +921,15 @@ export async function completeIteration(
           throw new ConflictError("只有进行中的迭代才能结束");
         }
 
-        const taskRows = await loadIterationTaskRows(tx, projectId, iterationId);
+        const taskRows = await loadIterationTaskRows(tx, projectId, iterationId, true);
         const mainTasks = mainTasksOf(taskRows);
 
         // 版本基线：预览时给几个任务，现在就得有几个，且逐个对得上
         const versionOf = new Map(input.taskVersions.map((v) => [v.taskId, v.updatedAt]));
-        if (versionOf.size !== mainTasks.length) {
+        if (versionOf.size !== taskRows.length || versionOf.size !== input.taskVersions.length) {
           throw new ConflictError("任务已被修改，请重新预览后再结束");
         }
-        for (const task of mainTasks) {
+        for (const task of taskRows) {
           const expected = versionOf.get(task.id);
           if (expected === undefined || new Date(expected).getTime() !== task.updatedAt.getTime()) {
             throw new ConflictError("任务已被修改，请重新预览后再结束");
@@ -952,6 +958,7 @@ export async function completeIteration(
         for (const d of input.unfinishedDisposition) {
           if (d.destination !== "iteration") continue;
           if (!d.targetIterationId) throw new ValidationError("转入迭代时必须指定目标迭代");
+          if (d.targetIterationId === iterationId) throw new ValidationError("未完成任务不能转回本轮");
           if (targets.includes(d.targetIterationId)) continue;
           const target = await lockIteration(tx, projectId, d.targetIterationId);
           if (target.status === "completed") {
@@ -1090,7 +1097,7 @@ export async function saveIterationRetrospective(
           await recordEvent(tx, projectId, iterationId, "retrospective_saved", actorId, {
             revision: row.revision,
           });
-          return { retrospective: toRetrospective(row) };
+          return toRetrospective(row);
         }
 
         if (input.expectedRevision !== undefined) {
@@ -1112,7 +1119,7 @@ export async function saveIterationRetrospective(
         await recordEvent(tx, projectId, iterationId, "retrospective_saved", actorId, {
           revision: 1,
         });
-        return { retrospective: toRetrospective(row) };
+        return toRetrospective(row);
       },
     ),
   );

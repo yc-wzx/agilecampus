@@ -64,7 +64,7 @@ const instant = z
 /** 迭代版本号：从 1 起，每次变更 +1（定稿 §9.1 的 expectedRevision）。 */
 const revision = z.number().int("版本号必须是整数").positive("版本号不合法");
 
-const createTaskSchema = z.object({
+const createTaskSchema = z.strictObject({
   requestId,
   title: z.string().trim().min(1, "请填写任务标题").max(200, "任务标题最多 200 字"),
   description: optionalText(10000, "描述"),
@@ -77,7 +77,7 @@ const createTaskSchema = z.object({
   parentTaskId: optionalUuid,
 });
 
-const patchSchema = z.object({
+const patchSchema = z.strictObject({
   title: z.string().trim().min(1, "任务标题不能为空").max(200, "任务标题最多 200 字").optional(),
   description: optionalText(10000, "描述"),
   acceptanceCriteria: optionalText(10000, "验收标准"),
@@ -90,17 +90,17 @@ const patchSchema = z.object({
   completionNote: optionalText(10000, "完成说明"),
 });
 
-const updateTaskSchema = z.object({
+const updateTaskSchema = z.strictObject({
   requestId,
   expectedUpdatedAt: instant,
   patch: patchSchema,
 });
 
-const deleteTaskSchema = z.object({ requestId, expectedUpdatedAt: instant });
+const deleteTaskSchema = z.strictObject({ requestId, expectedUpdatedAt: instant });
 
 /* --- P1：阻塞 --- */
 
-const blockSchema = z.object({
+const blockSchema = z.strictObject({
   requestId,
   expectedUpdatedAt: instant,
   isBlocked: z.boolean(),
@@ -111,7 +111,9 @@ const blockSchema = z.object({
 function refresh(projectId: string) {
   // 提交后的缓存刷新失败不该被当成写失败上报。
   try {
-    revalidatePath(`/projects/${projectId}`);
+    revalidatePath(`/projects/${projectId}`, "layout");
+    revalidatePath("/dashboard");
+    revalidatePath("/projects");
     revalidatePath(`/projects/${projectId}/iterations`);
   } catch {
     console.error("[tasks] cache refresh failed");
@@ -176,7 +178,7 @@ export async function getTaskPanelDataAction(
   taskId: string,
 ): Promise<Result<TaskPanelData>> {
   const parsed = z
-    .object({ projectId: z.uuid(), taskId: z.uuid() })
+    .strictObject({ projectId: z.uuid(), taskId: z.uuid() })
     .safeParse({ projectId, taskId });
   if (!parsed.success) {
     return { ok: false, code: "VALIDATION", error: parsed.error.issues[0].message };
@@ -198,7 +200,7 @@ export async function getTaskPanelContextAction(
   taskId: string,
 ): Promise<Result<TaskPanelContext>> {
   const parsed = z
-    .object({ projectId: z.uuid(), taskId: z.uuid() })
+    .strictObject({ projectId: z.uuid(), taskId: z.uuid() })
     .safeParse({ projectId, taskId });
   if (!parsed.success) {
     return { ok: false, code: "VALIDATION", error: parsed.error.issues[0].message };
@@ -263,7 +265,7 @@ export async function setTaskBlockedAction(
 
 /* --- P2：项目级统计与需关注清单（C-T08 / C-T09） --- */
 
-const attentionFiltersSchema = z.object({
+const attentionFiltersSchema = z.strictObject({
   kind: z.enum(["overdue", "blocked"], "请选择要看的风险类型"),
   offset: z.number().int("页码格式不正确").nonnegative("页码格式不正确").optional(),
   limit: z.number().int("每页条数格式不正确").positive("每页条数格式不正确").max(100, "每页最多 100 条").optional(),
@@ -273,7 +275,7 @@ const attentionFiltersSchema = z.object({
 export async function getProjectTaskStatsAction(
   projectId: string,
 ): Promise<Result<ProjectTaskStats>> {
-  const parsed = z.object({ projectId: z.uuid("项目 id 不合法") }).safeParse({ projectId });
+  const parsed = z.strictObject({ projectId: z.uuid("项目 id 不合法") }).safeParse({ projectId });
   if (!parsed.success) return invalid(parsed.error);
   return runAction((actorId) => getProjectTaskStats(actorId, parsed.data.projectId));
 }
@@ -298,15 +300,15 @@ export async function listProjectTaskAttentionAction(
  */
 
 /** 入轮/移出：每个任务都要带自己的版本，服务层逐个锁行比对。 */
-const assignTasksSchema = z.object({
+const assignTasksSchema = z.strictObject({
   requestId,
   expectedRevision: revision,
   tasks: z
-    .array(z.object({ taskId: z.uuid("任务 id 不合法"), expectedUpdatedAt: instant }))
-    .min(1, "至少要选一个任务"),
+    .array(z.strictObject({ taskId: z.uuid("任务 id 不合法"), expectedUpdatedAt: instant }))
+    .min(1, "至少要选一个任务").max(500, "一次最多处理 500 个任务"),
 });
 
-const reorderSchema = z.object({
+const reorderSchema = z.strictObject({
   requestId,
   taskId: z.uuid("任务 id 不合法"),
   beforeTaskId: z.uuid("锚点任务 id 不合法").nullable(),

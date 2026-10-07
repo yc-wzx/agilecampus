@@ -61,12 +61,15 @@ async function activeIteration(actorId: string, projectId: string, taskIds: stri
     expectedRevision: iteration.revision,
   });
   if (taskIds.length > 0) {
-    const tasks = await Promise.all(taskIds.map((id) => freshTask(actorId, id)));
+    const original = await Promise.all(taskIds.map((id) => freshTask(actorId, id)));
+    for (const task of original.filter((t) => !t.parentTaskId && t.status === "done")) await updateTask(actorId, task.id, { status: "todo" });
+    const tasks = await Promise.all(original.filter((t) => !t.parentTaskId).map((t) => freshTask(actorId, t.id)));
     await assignTasks(actorId, projectId, iteration.id, {
       requestId: rid(),
       expectedRevision: started.revision,
       tasks: tasks.map((t) => ({ taskId: t.id, expectedUpdatedAt: t.updatedAt.toISOString() })),
     });
+    for (const task of original.filter((t) => !t.parentTaskId && t.status === "done")) await updateTask(actorId, task.id, { status: "done" });
   }
   const detail = await getIterationDetail(actorId, projectId, iteration.id);
   return detail.iteration;
@@ -117,7 +120,7 @@ describe("previewIterationCompletion", () => {
 
     const preview = await previewIterationCompletion(student.id, project.id, iteration.id);
     expect(preview.unfinishedTasks.map((t) => t.id)).toEqual([parent.id]);
-    expect(preview.taskVersions.map((v) => v.taskId)).toEqual([parent.id]);
+    expect(preview.taskVersions.map((v) => v.taskId).sort()).toEqual([parent.id, child.id].sort());
   });
 
   it("可选落点只含同项目未结束、且不是本轮的迭代", async () => {
@@ -460,7 +463,7 @@ describe("复盘", () => {
     const { student, project } = await scene();
     const iteration = await finishedIteration(student.id, project.id);
 
-    const { retrospective } = await saveIterationRetrospective(
+    const retrospective = await saveIterationRetrospective(
       student.id,
       project.id,
       iteration.id,
@@ -489,13 +492,13 @@ describe("复盘", () => {
 
     const second = await saveIterationRetrospective(student.id, project.id, iteration.id, {
       requestId: rid(),
-      expectedRevision: first.retrospective.revision,
+      expectedRevision: first.revision,
       problems: "补一段",
     });
-    expect(second.retrospective.revision).toBe(2);
+    expect(second.revision).toBe(2);
     // 没传的字段保持原值，不会被清空
-    expect(second.retrospective.wentWell).toBe("初版");
-    expect(second.retrospective.problems).toBe("补一段");
+    expect(second.wentWell).toBe("初版");
+    expect(second.problems).toBe("补一段");
   });
 
   it("陈旧 expectedRevision 返回冲突且不改数据", async () => {
@@ -528,10 +531,10 @@ describe("复盘", () => {
     });
     const b = await saveIterationRetrospective(student.id, project.id, iteration.id, {
       requestId: rid(),
-      expectedRevision: a.retrospective.revision,
+      expectedRevision: a.revision,
       wentWell: "B",
     });
-    expect(b.retrospective.id).toBe(a.retrospective.id);
+    expect(b.id).toBe(a.id);
   });
 
   it("进行中的迭代不能写复盘", async () => {
@@ -835,5 +838,23 @@ describe("createIterationWithTasks", () => {
     const first = await createIterationWithTasks(student.id, project.id, input);
     const replay = await createIterationWithTasks(student.id, project.id, input);
     expect(replay.iteration.id).toBe(first.iteration.id);
+  });
+});
+
+describe("结束迭代的子任务版本回归", () => {
+  beforeEach(resetDb);
+  it("子任务变更也拒绝旧预览，结束后保留当时子任务快照", async () => {
+    const { student, project } = await scene();
+    const parent = await createTask(student.id, project.id, { title: "父任务" });
+    const child = await createSubtask(student.id, parent.id, { title: "子任务" });
+    const iteration = await activeIteration(student.id, project.id, [parent.id]);
+    const old = await completeInput(student.id, project.id, iteration.id);
+    await updateTask(student.id, child.id, { title: "子任务已修改" });
+    await expect(completeIteration(student.id, project.id, iteration.id, old)).rejects.toThrow("重新预览");
+    await completeIteration(student.id, project.id, iteration.id, await completeInput(student.id, project.id, iteration.id));
+    const history = await getIterationHistory(student.id, project.id, iteration.id);
+    expect(history?.taskSnapshots.find((t) => t.id === child.id)?.title).toBe("子任务已修改");
+    await updateTask(student.id, child.id, { title: "后来修改" });
+    expect((await getIterationHistory(student.id, project.id, iteration.id))?.taskSnapshots.find((t) => t.id === child.id)?.title).toBe("子任务已修改");
   });
 });

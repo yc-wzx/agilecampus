@@ -33,11 +33,11 @@ const draftId = z.uuid("草案 id 不合法");
 const requestId = z.uuid("请求标识不合法");
 const instant = z.string().refine((s) => !Number.isNaN(new Date(s).getTime()), "时间格式不正确");
 
-const confirmSchema = z.object({
+const confirmSchema = z.strictObject({
   requestId,
   expectedDraftRevision: z.number().int("版本号必须是整数").positive("版本号不合法"),
   expectedTaskVersions: z
-    .array(z.object({ taskId: z.uuid("任务 id 不合法"), updatedAt: instant }))
+    .array(z.strictObject({ taskId: z.uuid("任务 id 不合法"), updatedAt: instant }))
     .max(500, "一次最多处理 500 个任务"),
 });
 
@@ -47,7 +47,9 @@ function invalid(error: z.ZodError): Result<never> {
 
 function refresh(projectId: string) {
   try {
-    revalidatePath(`/projects/${projectId}`);
+    revalidatePath(`/projects/${projectId}`, "layout");
+    revalidatePath("/dashboard");
+    revalidatePath("/projects");
     revalidatePath(`/projects/${projectId}/iterations`);
     revalidatePath(`/projects/${projectId}/ai-drafts`);
   } catch {
@@ -61,7 +63,7 @@ export async function previewIterationDraftAction(
   draftIdInput: string,
 ): Promise<Result<PreviewIterationDraftResult>> {
   const parsed = z
-    .object({ projectId: z.uuid("项目 id 不合法"), draftId })
+    .strictObject({ projectId: z.uuid("项目 id 不合法"), draftId })
     .safeParse({ projectId, draftId: draftIdInput });
   if (!parsed.success) return invalid(parsed.error);
 
