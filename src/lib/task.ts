@@ -11,13 +11,13 @@ import {
   type TaskPriority,
   type TaskStatus,
 } from "@/db/schema";
-import { AppError, ForbiddenError } from "./errors";
+import { AppError, ConflictError, ForbiddenError, NotFoundError } from "./errors";
 import { getTeamMembership } from "./team";
 import { getProjectForUser } from "./project";
 import { notifyTaskAssigned, notifyTaskCompleted } from "./notify";
 
 // 任务写操作角色：admin + student（teacher 只读，设计文档 §5）
-const TASK_WRITE_ROLES = ["admin", "student"];
+export const TASK_WRITE_ROLES = ["admin", "student"];
 
 async function requireProjectAccess(actorId: string, projectId: string) {
   const access = await getProjectForUser(actorId, projectId);
@@ -66,6 +66,8 @@ export async function createTask(
     milestoneId?: string;
     priority?: TaskPriority;
     parentTaskId?: string;
+    /** C / P0：验收标准，可选。旧调用方不传即为空。 */
+    acceptanceCriteria?: string;
   },
   opts?: { tx?: DbTx },
 ) {
@@ -82,6 +84,7 @@ export async function createTask(
       createdById: actorId,
       title: input.title,
       description: input.description,
+      acceptanceCriteria: input.acceptanceCriteria,
       assigneeId: input.assigneeId,
       startDate: input.startDate,
       dueDate: input.dueDate,
@@ -103,6 +106,7 @@ export async function updateTask(
   patch: {
     title?: string;
     description?: string | null;
+    acceptanceCriteria?: string | null;
     assigneeId?: string | null;
     startDate?: string | null;
     dueDate?: string | null;
@@ -111,13 +115,34 @@ export async function updateTask(
     priority?: TaskPriority;
     completionNote?: string | null;
   },
-  opts?: { tx?: DbTx },
+  opts?: { tx?: DbTx; expectedUpdatedAt?: Date | string },
 ) {
   const exec = opts?.tx ?? db;
-  const [task] = await exec.select().from(tasks).where(eq(tasks.id, taskId));
-  if (!task) throw new AppError("任务不存在");
+  const base = exec.select().from(tasks).where(eq(tasks.id, taskId));
+  // 乐观锁：带 expectedUpdatedAt 时先锁行再比对，避免「查一次时间后无条件覆盖」的竞态。
+  // 不带时保持旧的单次读，且不取行锁（旧看板/Agent API/plan_sprint 走的就是这条）。
+  const [task] =
+    opts?.expectedUpdatedAt !== undefined ? await base.for("update") : await base;
+  if (!task) throw new NotFoundError("任务不存在");
 
   const access = await requireTaskWrite(actorId, task.projectId);
+
+  if (opts?.expectedUpdatedAt !== undefined) {
+    const expected =
+      opts.expectedUpdatedAt instanceof Date
+        ? opts.expectedUpdatedAt
+        : new Date(opts.expectedUpdatedAt);
+    // 两侧都只到毫秒：updatedAt 由 postgres 驱动解析成 Date（毫秒），
+    // 前端回传的是我们吐出去的 toISOString()，故直接比 getTime() 即可。
+    if (Number.isNaN(expected.getTime()) || expected.getTime() !== task.updatedAt.getTime()) {
+      throw new ConflictError("任务已被他人修改，请刷新后重试");
+    }
+  }
+
+  const startDate = patch.startDate === undefined ? task.startDate : patch.startDate;
+  const dueDate = patch.dueDate === undefined ? task.dueDate : patch.dueDate;
+  if (startDate && dueDate && startDate > dueDate) throw new AppError("任务开始日期不能晚于截止日期");
+
   if (patch.assigneeId) await validateAssignee(access.project.teamId, patch.assigneeId);
   if (patch.milestoneId) await validateMilestone(task.projectId, patch.milestoneId);
 
@@ -128,6 +153,9 @@ export async function updateTask(
     .set({
       ...(patch.title !== undefined && { title: patch.title }),
       ...(patch.description !== undefined && { description: patch.description }),
+      ...(patch.acceptanceCriteria !== undefined && {
+        acceptanceCriteria: patch.acceptanceCriteria,
+      }),
       ...(patch.assigneeId !== undefined && { assigneeId: patch.assigneeId }),
       ...(patch.startDate !== undefined && { startDate: patch.startDate }),
       ...(patch.dueDate !== undefined && { dueDate: patch.dueDate }),
@@ -139,7 +167,7 @@ export async function updateTask(
     })
     .where(eq(tasks.id, taskId))
     .returning();
-  if (!updated) throw new AppError("任务不存在");
+  if (!updated) throw new NotFoundError("任务不存在");
 
   if (!opts?.tx) {
     // 改派：通知新负责人
@@ -161,7 +189,7 @@ export type TaskLabel = { id: string; name: string; color: string };
 
 // 另发一次查询按 taskId 归并，不用 leftJoin：join 会造成行乘积，
 // 污染既有 orderBy(sortOrder) 与调用方「一行一任务」的假设。
-async function labelsByTask(taskIds: string[]): Promise<Map<string, TaskLabel[]>> {
+export async function labelsByTask(taskIds: string[]): Promise<Map<string, TaskLabel[]>> {
   const map = new Map<string, TaskLabel[]>();
   if (taskIds.length === 0) return map;
 
@@ -192,6 +220,7 @@ export async function listProjectTasks(actorId: string, projectId: string) {
       id: tasks.id,
       title: tasks.title,
       description: tasks.description,
+      acceptanceCriteria: tasks.acceptanceCriteria,
       status: tasks.status,
       priority: tasks.priority,
       startDate: tasks.startDate,
@@ -199,6 +228,7 @@ export async function listProjectTasks(actorId: string, projectId: string) {
       sortOrder: tasks.sortOrder,
       milestoneId: tasks.milestoneId,
       parentTaskId: tasks.parentTaskId,
+      sprintId: tasks.sprintId,
       assigneeId: tasks.assigneeId,
       assigneeName: users.name,
       updatedAt: tasks.updatedAt,
@@ -207,7 +237,9 @@ export async function listProjectTasks(actorId: string, projectId: string) {
     .from(tasks)
     .leftJoin(users, eq(tasks.assigneeId, users.id))
     .where(eq(tasks.projectId, projectId))
-    .orderBy(tasks.sortOrder);
+    // 补 id 兜底：createTask 写的是 Date.now()，同一毫秒建的两个任务 sortOrder 会撞值，
+    // 只按 sort_order 排会导致列表顺序不稳定、翻页重复或漏项。
+    .orderBy(tasks.sortOrder, tasks.id);
 
   const byTask = await labelsByTask(rows.map((r) => r.id));
   return rows.map((r) => ({ ...r, labels: byTask.get(r.id) ?? [] }));
@@ -276,6 +308,7 @@ export async function getTaskDetail(actorId: string, taskId: string) {
       projectId: tasks.projectId,
       title: tasks.title,
       description: tasks.description,
+      acceptanceCriteria: tasks.acceptanceCriteria,
       completionNote: tasks.completionNote,
       status: tasks.status,
       priority: tasks.priority,
@@ -283,6 +316,7 @@ export async function getTaskDetail(actorId: string, taskId: string) {
       dueDate: tasks.dueDate,
       milestoneId: tasks.milestoneId,
       parentTaskId: tasks.parentTaskId,
+      sprintId: tasks.sprintId,
       assigneeId: tasks.assigneeId,
       assigneeName: users.name,
       updatedAt: tasks.updatedAt,

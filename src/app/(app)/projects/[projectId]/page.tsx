@@ -54,6 +54,10 @@ export default async function ProjectPage({
   const canWrite = role === "admin" || role === "student";
   const isAdmin = role === "admin";
 
+  // 详情侧边栏由 URL 的 ?task= 驱动，但**取数在面板自己手里**（定稿 9.2 侧边栏契约）：
+  // 它按 taskId 调 getTaskPanelContextAction，挂载与切换都重新鉴权。取不到只影响面板本身，
+  // 用户还在看板上，不会因为一个失效的深链就丢掉整页上下文。
+
   const [latestConv] = await db
     .select({ id: conversations.id })
     .from(conversations)
@@ -79,6 +83,7 @@ export default async function ProjectPage({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <h1 className="min-w-0 break-words font-display text-2xl font-semibold text-ink">{project.name}</h1>
           <nav className="flex flex-wrap items-center gap-2 whitespace-nowrap" aria-label="项目页面">
+            <a href={`/projects/${projectId}/iterations`} className="ac-btn-ghost">迭代</a>
             <a href={`/projects/${projectId}/overview`} className="ac-btn-ghost">概览</a>
             <a href={`/projects/${projectId}/deliverables`} className="ac-btn-ghost">阶段成果</a>
             <a href={`/projects/${projectId}/timeline`} className="ac-btn-ghost">时间线</a>
@@ -128,7 +133,6 @@ export default async function ProjectPage({
           members={members}
           milestones={projectMilestones.map((m) => ({ id: m.id, name: m.title }))}
           allTasks={projectTasks.map((t) => ({ id: t.id, title: t.title }))}
-          allLabels={teamLabels.map((l) => ({ id: l.id, name: l.name }))}
           dependencies={dependencies}
         />
       </section>

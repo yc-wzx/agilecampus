@@ -1,6 +1,7 @@
 "use client";
 
 import { useOptimistic, useState, useTransition } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   DndContext,
   PointerSensor,
@@ -9,8 +10,10 @@ import {
   useSensors,
   type DragEndEvent,
 } from "@dnd-kit/core";
+import { z } from "zod";
 import { deriveColumns, type BoardColumn, type ColumnPatch } from "@/lib/board-columns";
 import type { GroupBy } from "@/lib/board-filters";
+import { TaskDetailPanel } from "@/components/tasks/task-detail-panel";
 import { moveTaskAction } from "./actions";
 import { TaskCard, type Option } from "./task-card";
 
@@ -32,23 +35,17 @@ export type BoardTask = {
 function Column({
   column,
   tasks,
-  projectId,
   canWrite,
-  members,
-  milestones,
   allTasks,
-  allLabels,
   dependencies,
+  onOpenTask,
 }: {
   column: BoardColumn;
   tasks: BoardTask[];
-  projectId: string;
   canWrite: boolean;
-  members: Option[];
-  milestones: Option[];
   allTasks: { id: string; title: string }[];
-  allLabels: Option[];
   dependencies: { predecessorId: string; successorId: string }[];
+  onOpenTask: (taskId: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: column.key });
 
@@ -67,13 +64,10 @@ function Column({
         <TaskCard
           key={t.id}
           task={t}
-          projectId={projectId}
           canWrite={canWrite}
-          members={members}
-          milestones={milestones}
           allTasks={allTasks}
-          allLabels={allLabels}
           dependencies={dependencies}
+          onOpen={() => onOpenTask(t.id)}
         />
       ))}
     </div>
@@ -88,7 +82,6 @@ export function Board({
   members,
   milestones,
   allTasks,
-  allLabels,
   dependencies,
 }: {
   projectId: string;
@@ -98,7 +91,6 @@ export function Board({
   members: Option[];
   milestones: Option[];
   allTasks: { id: string; title: string }[];
-  allLabels: Option[];
   dependencies: { predecessorId: string; successorId: string }[];
 }) {
   const [, startTransition] = useTransition();
@@ -113,6 +105,34 @@ export function Board({
   );
 
   const columns = deriveColumns(groupBy, { members, milestones });
+
+  // 详情侧边栏是**全局单例**：不能 30 张卡片各挂一个。
+  // 它由 URL 的 ?task= 驱动——打开就是往 URL 写 task，关闭就是删掉它，
+  // 所以刷新/后退/分享链接都自然正确；数据由面板自己按 taskId 取（定稿 9.2 的侧边栏契约）。
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  function writeTaskQuery(taskId: string | null) {
+    const params = new URLSearchParams(searchParams.toString());
+    if (taskId) params.set("task", taskId);
+    else params.delete("task");
+    const qs = params.toString();
+    startTransition(() => {
+      // replace 而非 push：开开关关面板不该堆满历史记录，但筛选参数要保留
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    });
+  }
+
+  const openPanel = (taskId: string) => writeTaskQuery(taskId);
+  const closePanel = () => writeTaskQuery(null);
+  /** 面板保存成功后回头刷新看板卡片与筛选计数（面板自己的数据它自己已重取）。 */
+  const reload = () => startTransition(() => router.refresh());
+
+  // ?task= 得是个 uuid 才当「要开面板」——和深链校验同一口径，免得垃圾参数挂出一个必然报错的面板。
+  const rawTaskId = searchParams.get("task");
+  const openTaskId =
+    rawTaskId !== null && z.uuid().safeParse(rawTaskId).success ? rawTaskId : null;
 
   function handleDragEnd(event: DragEndEvent) {
     const taskId = String(event.active.id);
@@ -141,16 +161,22 @@ export function Board({
             key={col.key}
             column={col}
             tasks={optimisticTasks.filter((t) => col.matches(t))}
-            projectId={projectId}
             canWrite={canWrite}
-            members={members}
-            milestones={milestones}
             allTasks={allTasks}
-            allLabels={allLabels}
             dependencies={dependencies}
+            onOpenTask={openPanel}
           />
         ))}
       </div>
+
+      {openTaskId && (
+        <TaskDetailPanel
+          projectId={projectId}
+          taskId={openTaskId}
+          onClose={closePanel}
+          onSaved={reload}
+        />
+      )}
     </DndContext>
   );
 }

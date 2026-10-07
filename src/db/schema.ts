@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   pgEnum,
@@ -11,6 +12,8 @@ import {
   index,
   jsonb,
   integer,
+  boolean,
+  bigserial,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
@@ -56,9 +59,12 @@ export const projectStatusEnum = pgEnum("project_status", ["active", "archived"]
 export const milestoneStatusEnum = pgEnum("milestone_status", ["open", "done"]);
 export const taskStatusEnum = pgEnum("task_status", ["todo", "doing", "done"]);
 export const taskPriorityEnum = pgEnum("task_priority", ["low", "medium", "high"]);
+// C / P0：迭代状态。开始 planned→active，结束 active→completed。
+export const iterationStatusEnum = pgEnum("iteration_status", ["planned", "active", "completed"]);
 export type ProjectStatus = (typeof projectStatusEnum.enumValues)[number];
 export type TaskStatus = (typeof taskStatusEnum.enumValues)[number];
 export type TaskPriority = (typeof taskPriorityEnum.enumValues)[number];
+export type IterationStatus = (typeof iterationStatusEnum.enumValues)[number];
 
 export const projects = pgTable(
   "projects",
@@ -92,6 +98,37 @@ export const milestones = pgTable(
   (t) => [index("milestones_project_idx").on(t.projectId)],
 );
 
+// C / P0：迭代（冲刺）。tasks.sprint_id 指向它。
+// 契约要求「一个项目最多一轮 active」——由下面的部分唯一索引在数据库层保证，并发也成立。
+export const iterations = pgTable(
+  "iterations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    goal: text("goal"),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    status: iterationStatusEnum("status").notNull().default("planned"),
+    // 乐观锁版本号：每次修改自增，调用方须回传 expectedRevision。
+    revision: integer("revision").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    // 每项目至多一轮 active。部分唯一索引让「并发开始两轮」在 DB 层只可能成功一个，
+    // 输的一方收到 23505，由服务层翻成友好中文错误。
+    uniqueIndex("iterations_one_active_per_project")
+      .on(t.projectId)
+      .where(sql`${t.status} = 'active'`),
+    index("iterations_project_idx").on(t.projectId),
+  ],
+);
+
 export const tasks = pgTable(
   "tasks",
   {
@@ -102,6 +139,9 @@ export const tasks = pgTable(
     milestoneId: uuid("milestone_id").references(() => milestones.id, {
       onDelete: "set null",
     }),
+    // C / P0：迭代归属。内部列名 sprint_id，对外 DTO 字段为 iterationId（仅此一份归属）。
+    // 迭代删除后置空 = 任务退回任务池，不连带删任务。
+    sprintId: uuid("sprint_id").references(() => iterations.id, { onDelete: "set null" }),
     // 子任务层级：自引用，空＝顶层任务。父任务删则子任务随之（cascade）。
     // 自引用外键须显式标注 AnyPgColumn，否则 TS 推断成环。
     parentTaskId: uuid("parent_task_id").references((): AnyPgColumn => tasks.id, {
@@ -109,6 +149,8 @@ export const tasks = pgTable(
     }),
     title: text("title").notNull(),
     description: text("description"),
+    // C / P0：验收标准。可选文本，旧任务为空；长度上限在服务层校验（10000 字）。
+    acceptanceCriteria: text("acceptance_criteria"),
     completionNote: text("completion_note"),
     assigneeId: uuid("assignee_id").references(() => users.id, {
       onDelete: "set null",
@@ -121,6 +163,11 @@ export const tasks = pgTable(
     status: taskStatusEnum("status").notNull().default("todo"),
     priority: taskPriorityEnum("priority").notNull().default("medium"),
     sortOrder: doublePrecision("sort_order").notNull().default(0),
+    // C / P1：阻塞标记。三个字段同生共死，只由 lib/task-contract.ts 的 setTaskBlocked 一处写入；
+    // updateTask 的白名单里刻意不含它们，免得「解除阻塞」漏写 blockedAt 之类的不一致状态。
+    isBlocked: boolean("is_blocked").notNull().default(false),
+    blockedReason: text("blocked_reason"),
+    blockedAt: timestamp("blocked_at", { withTimezone: true }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -128,6 +175,10 @@ export const tasks = pgTable(
     index("tasks_project_idx").on(t.projectId),
     index("tasks_assignee_idx").on(t.assigneeId),
     index("tasks_parent_idx").on(t.parentTaskId),
+    // 任务池查询按 sprint_id IS NULL 过滤，且入轮/移出按 sprint_id 定位
+    index("tasks_sprint_idx").on(t.sprintId),
+    // P2 的「需关注任务」按项目 + 是否阻塞筛
+    index("tasks_blocked_idx").on(t.projectId, t.isBlocked),
   ],
 );
 
@@ -370,3 +421,153 @@ export const deliverableOutbox = pgTable("deliverable_outbox", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   deliveredAt: timestamp("delivered_at", { withTimezone: true }),
 }, (t) => [index("deliverable_outbox_pending_idx").on(t.deliveredAt, t.createdAt)]);
+
+// C / P0：requestId 幂等账本。契约要求「新变更中使用 requestId 的操作都应保存服务端幂等凭据；
+// 相同标识与内容重放返回原操作结果，相同标识配不同内容返回 CONFLICT」。
+//
+// 不把 requestId 挂到 tasks 上：同一任务会被反复修改，一行只能存一个请求标识，那样是错的。
+// 改为按 (project, actor, operation, requestId) 记账，一次请求一行，result 存首次成功的返回体供回放。
+// 与 D 的 deliverable_* 系列互不重叠。
+export const writeRequests = pgTable(
+  "write_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    actorId: uuid("actor_id").notNull(),
+    operation: text("operation").notNull(),
+    requestId: uuid("request_id").notNull(),
+    requestHash: text("request_hash").notNull(),
+    result: jsonb("result").$type<unknown>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("write_requests_unique").on(t.projectId, t.actorId, t.operation, t.requestId),
+    index("write_requests_created_idx").on(t.createdAt),
+  ],
+);
+
+// C / P1：迭代复盘。一轮迭代至多一份（uniqueIndex 兜底），内容可改故带 revision 做乐观锁。
+// authorId 不设外键：契约里它是 string，且起草人与用户删除是两件事，留下 id 更有历史价值。
+export const retrospectives = pgTable(
+  "retrospectives",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    iterationId: uuid("iteration_id")
+      .notNull()
+      .references(() => iterations.id, { onDelete: "cascade" }),
+    wentWell: text("went_well"),
+    problems: text("problems"),
+    nextActions: text("next_actions"),
+    authorId: uuid("author_id").notNull(),
+    revision: integer("revision").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("retrospectives_iteration_unique").on(t.iterationId),
+    index("retrospectives_project_idx").on(t.projectId),
+  ],
+);
+
+// C / P1：迭代结束时的不可变历史快照（定稿 C-I08）。
+//
+// 刻意用 jsonb 而非再来一套 history_tasks 表：快照的全部意义就是「冻结当时的值」，
+// 一旦落成可 join 的行，总有人忍不住去 join 活任务表，历史就跟着变了。
+// iteration_id 唯一 = 一轮只能结束一次，重复结束由 DB 兜底。
+export const iterationHistories = pgTable(
+  "iteration_histories",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    iterationId: uuid("iteration_id")
+      .notNull()
+      .references(() => iterations.id, { onDelete: "cascade" }),
+    /** Iteration DTO 快照 */
+    iterationSnapshot: jsonb("iteration_snapshot").notNull(),
+    /** TaskSummary[] 快照 */
+    taskSnapshots: jsonb("task_snapshots").notNull(),
+    /** {taskTotal,doneCount,doneRatio} */
+    stats: jsonb("stats").notNull(),
+    /** UnfinishedDisposition[]：未完成任务各自去了哪里 */
+    dispositions: jsonb("dispositions").notNull(),
+    closedAt: timestamp("closed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("iteration_histories_iteration_unique").on(t.iterationId),
+    index("iteration_histories_project_idx").on(t.projectId, t.closedAt),
+  ],
+);
+
+// C / P2：AI 迭代草案（定稿 9.9 的 IterationDraft）。
+//
+// 存储归 C 的数据库整合这一摊，生成/取消归 E（E-AI05/E-AI06），
+// 预览校验与事务确认归 C（C-AI01/C-AI02）。表先建好，E 那边照此写入即可。
+// candidate_tasks 用 jsonb：它整体就是一份「当时的快照 + 理由」，不需要按任务反查。
+export const iterationDrafts = pgTable(
+  "iteration_drafts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    createdById: uuid("created_by_id").notNull(),
+    /** 会话删除不该带走草案，故置空而非级联。 */
+    conversationId: uuid("conversation_id").references(() => conversations.id, {
+      onDelete: "set null",
+    }),
+    /** pending / confirmed / cancelled / expired */
+    status: text("status").notNull().default("pending"),
+    revision: integer("revision").notNull().default(1),
+    name: text("name").notNull(),
+    goal: text("goal"),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    /** IterationDraftCandidateTask[] */
+    candidateTasks: jsonb("candidate_tasks").notNull(),
+    sourceRefs: jsonb("source_refs"),
+    /** 确认后指向真正建出的那轮，便于重放时原样返回。 */
+    confirmedIterationId: uuid("confirmed_iteration_id").references(() => iterations.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** 创建后 24 小时到期，由服务端校验 */
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index("iteration_drafts_project_idx").on(t.projectId, t.createdAt),
+    index("iteration_drafts_creator_idx").on(t.createdById, t.status),
+  ],
+);
+
+// C / P1：迭代事件流水。做完的事不再改，只追加，供迭代详情页回看「这一轮都发生了什么」。
+// 刻意不建在 iterations 上做 jsonb 数组：追加式流水不会被并发覆盖，也不用读改写整行。
+export const iterationEvents = pgTable(
+  "iteration_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /**
+     * 插入序号，只用来定序。同一事务里写下的多条事件 created_at 完全相同
+     * （now() 是事务开始时刻），光靠时间排不出先后，必须有单调列兜底。
+     */
+    seq: bigserial("seq", { mode: "number" }).notNull(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    iterationId: uuid("iteration_id")
+      .notNull()
+      .references(() => iterations.id, { onDelete: "cascade" }),
+    /** 与契约的 ITERATION_EVENT_TYPES 对应 */
+    type: text("type").notNull(),
+    actorId: uuid("actor_id"),
+    payload: jsonb("payload").$type<unknown>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("iteration_events_iteration_idx").on(t.iterationId, t.seq)],
+);
