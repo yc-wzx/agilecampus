@@ -47,7 +47,7 @@ const iterationName = z
   .max(200, "迭代名称最多 200 字");
 const goal = z.string().max(10000, "迭代目标最多 10000 字").nullish();
 
-const createIterationSchema = z.object({
+const createIterationSchema = z.strictObject({
   requestId,
   name: iterationName,
   goal,
@@ -55,7 +55,7 @@ const createIterationSchema = z.object({
   endDate: z.iso.date("结束日期格式不正确"),
 });
 
-const updateIterationSchema = z.object({
+const updateIterationSchema = z.strictObject({
   requestId,
   expectedRevision: revision,
   name: iterationName.optional(),
@@ -64,7 +64,7 @@ const updateIterationSchema = z.object({
   endDate: z.iso.date("结束日期格式不正确").optional(),
 });
 
-const revisionSchema = z.object({ requestId, expectedRevision: revision });
+const revisionSchema = z.strictObject({ requestId, expectedRevision: revision });
 
 /** 入轮/移出：每个任务都要带自己的版本，服务层逐个锁行比对。 */
 
@@ -73,13 +73,13 @@ const revisionSchema = z.object({ requestId, expectedRevision: revision });
 
 /** 预览基线：一个任务一条，结束时要原样回传。 */
 const taskVersionsSchema = z
-  .array(z.object({ taskId: z.uuid("任务 id 不合法"), updatedAt: instant }))
+  .array(z.strictObject({ taskId: z.uuid("任务 id 不合法"), updatedAt: instant }))
   .max(500, "一次最多处理 500 个任务");
 
 /** 未完成任务的去向。服务层还会核对「是否恰好覆盖全部未完成主任务」，这里只管形状。 */
 const dispositionSchema = z
   .array(
-    z.object({
+    z.strictObject({
       taskId: z.uuid("任务 id 不合法"),
       destination: z.enum(["backlog", "iteration"], "去向只能是任务池或另一轮迭代"),
       targetIterationId: z.uuid("目标迭代 id 不合法").optional(),
@@ -87,7 +87,7 @@ const dispositionSchema = z
   )
   .max(500, "一次最多处理 500 个任务");
 
-const completeSchema = z.object({
+const completeSchema = z.strictObject({
   requestId,
   expectedRevision: revision,
   taskVersions: taskVersionsSchema,
@@ -96,7 +96,7 @@ const completeSchema = z.object({
 
 const retroText = z.string().max(10000, "复盘内容最多 10000 字").nullish();
 
-const retrospectiveSchema = z.object({
+const retrospectiveSchema = z.strictObject({
   requestId,
   expectedRevision: z.number().int("版本号必须是整数").positive("版本号不合法").optional(),
   wentWell: retroText,
@@ -110,7 +110,9 @@ function invalid(error: z.ZodError): Result<never> {
 
 function refresh(projectId: string, extra?: string) {
   try {
-    revalidatePath(`/projects/${projectId}`);
+    revalidatePath(`/projects/${projectId}`, "layout");
+    revalidatePath("/dashboard");
+    revalidatePath("/projects");
     revalidatePath(`/projects/${projectId}/iterations`);
     if (extra) revalidatePath(extra);
   } catch {
@@ -142,6 +144,7 @@ export async function updateIterationAction(
 ): Promise<Result<Iteration>> {
   const parsed = updateIterationSchema
     .extend({ projectId: z.uuid("项目 id 不合法"), iterationId: z.uuid("迭代 id 不合法") })
+    .refine((data) => [data.name, data.goal, data.startDate, data.endDate].some((v) => v !== undefined), "至少修改一个迭代字段")
     .safeParse({ ...input, projectId, iterationId });
   if (!parsed.success) return invalid(parsed.error);
 
@@ -175,7 +178,7 @@ export async function previewIterationCompletionAction(
   iterationId: string,
 ): Promise<Result<IterationCompletionPreview>> {
   const parsed = z
-    .object({ projectId: z.uuid(), iterationId: z.uuid() })
+    .strictObject({ projectId: z.uuid(), iterationId: z.uuid() })
     .safeParse({ projectId, iterationId });
   if (!parsed.success) return invalid(parsed.error);
   return runAction((actorId) =>

@@ -15,10 +15,8 @@
 export const ERROR_CODES = [
   "UNAUTHENTICATED",
   "FORBIDDEN",
-  "NOT_FOUND",
   "VALIDATION",
   "CONFLICT",
-  "UNAVAILABLE",
   "INTERNAL",
 ] as const;
 
@@ -412,7 +410,7 @@ export type SaveRetrospectiveInput = {
   nextActions?: string | null;
 };
 
-export type SaveRetrospectiveResult = { retrospective: Retrospective };
+export type SaveRetrospectiveResult = Retrospective;
 
 /** C-I11：删除尚未开始的迭代，关联任务退回任务池，任务本身不删。 */
 export type DeletePlannedIterationResult = { deleted: true; iterationId: string };

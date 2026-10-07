@@ -313,3 +313,14 @@ describe("旧入口不被破坏", () => {
     expect(row?.sprintId).toBeNull();
   });
 });
+
+describe("重复请求权限回归", () => {
+  beforeEach(resetDb);
+  it("创建成功后降为教师，重放仍拒绝，不能取回旧结果", async () => {
+    const { owner, student, team, project } = await scene();
+    const input = { requestId: rid(), title: "私有项目任务" };
+    await createTaskV1(student.id, project.id, input);
+    await updateMemberRole(owner.id, team.id, student.id, "teacher");
+    await expect(createTaskV1(student.id, project.id, input)).rejects.toThrow();
+  });
+});

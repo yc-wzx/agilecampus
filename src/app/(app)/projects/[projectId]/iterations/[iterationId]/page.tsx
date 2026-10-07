@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { getProjectForUser } from "@/lib/project";
+import { NotFoundError, ForbiddenError } from "@/lib/errors";
 import { getIterationDetail, getIterationHistory, listProjectIterations } from "@/lib/iteration";
 import { listBacklog } from "@/lib/task-contract";
 import { IterationDetailView } from "./iteration-detail-view";
@@ -29,7 +30,7 @@ export default async function IterationDetailPage({
   const actorId = session.user.id;
 
   // 读服务对「不存在」抛 NotFoundError，页面只关心 404。
-  const detail = await getIterationDetail(actorId, projectId, iterationId).catch(() => null);
+  const detail = await getIterationDetail(actorId, projectId, iterationId).catch((error: unknown) => { if (error instanceof NotFoundError || error instanceof ForbiddenError) return null; throw error; });
   if (!detail) notFound();
 
   const locked = detail.iteration.status === "completed";

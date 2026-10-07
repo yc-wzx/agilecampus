@@ -174,3 +174,16 @@ describe("setTaskBlocked", () => {
     ).rejects.toThrow("任务不存在");
   });
 });
+
+describe("阻塞计时回归", () => {
+  beforeEach(resetDb);
+  it("编辑阻塞原因保留首次阻塞时间，解阻后再阻塞才重新计时", async () => {
+    const { student, project } = await scene();
+    const task = await createTask(student.id, project.id, { title: "阻塞任务" });
+    const first = await setTaskBlocked(student.id, project.id, task.id, { requestId: rid(), expectedUpdatedAt: task.updatedAt.toISOString(), isBlocked: true, blockedReason: "等待接口" });
+    const edited = await setTaskBlocked(student.id, project.id, task.id, { requestId: rid(), expectedUpdatedAt: first.task.updatedAt, isBlocked: true, blockedReason: "等待数据库接口" });
+    expect(edited.task.blockedAt).toBe(first.task.blockedAt);
+    const cleared = await setTaskBlocked(student.id, project.id, task.id, { requestId: rid(), expectedUpdatedAt: edited.task.updatedAt, isBlocked: false });
+    expect(cleared.task.blockedAt).toBeNull();
+  });
+});

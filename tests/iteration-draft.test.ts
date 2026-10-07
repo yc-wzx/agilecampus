@@ -147,7 +147,7 @@ describe("previewIterationDraft", () => {
 
     const preview = await previewIterationDraft(student.id, project.id, draft.id);
     expect(preview.validation.valid).toBe(false);
-    expect(preview.validation.conflicts[0].reason).toBe("任务已被排入其他迭代");
+    expect(preview.validation.conflicts.some((c) => c.reason === "任务已被排入其他迭代")).toBe(true);
   });
 
   it("被删掉的任务算冲突，且不进版本基线", async () => {
@@ -351,7 +351,7 @@ describe("confirmIterationDraft", () => {
     const { owner, student, project } = await scene();
     const a = await createTask(student.id, project.id, { title: "甲" });
     const draft = await insertDraft(student.id, project.id, [a.id]);
-    const { input } = await confirmInput(owner.id, project.id, draft.id);
+    const { input } = await confirmInput(student.id, project.id, draft.id);
 
     await expect(confirmIterationDraft(owner.id, project.id, draft.id, input)).rejects.toThrow(
       "只有草案创建者可以确认",
@@ -430,5 +430,37 @@ describe("suggestIterationCandidates（供 E-AI05 使用）", () => {
     }
     const picks = await suggestIterationCandidates(student.id, project.id, { size: 2 });
     expect(picks).toHaveLength(2);
+  });
+});
+
+// 本次评审：过时草案、私有预览与重放结果回归。
+describe("草案确认回归", () => {
+  beforeEach(resetDb);
+  it("同队教师和管理员也不能读取学生的私有草案", async () => {
+    const { student, owner, teacher, project } = await scene();
+    const a = await createTask(student.id, project.id, { title: "任务" });
+    const draft = await insertDraft(student.id, project.id, [a.id]);
+    for (const actor of [owner, teacher]) await expect(previewIterationDraft(actor.id, project.id, draft.id)).rejects.toThrow();
+  });
+  it("任务改动后重新预览仍拒绝；不把最新版本当作旧草案的认可", async () => {
+    const { student, project } = await scene();
+    const a = await createTask(student.id, project.id, { title: "任务" });
+    const draft = await insertDraft(student.id, project.id, [a.id]);
+    await updateTask(student.id, a.id, { title: "已变更" });
+    const { input, preview } = await confirmInput(student.id, project.id, draft.id);
+    expect(preview.validation.valid).toBe(false);
+    await expect(confirmIterationDraft(student.id, project.id, draft.id, input)).rejects.toThrow("生成后已被修改");
+    expect((await getTaskPanelData(student.id, project.id, a.id)).task.iterationId).toBeNull();
+  });
+  it("同一 requestId 改确认内容返回冲突；原请求重放返回首次快照", async () => {
+    const { student, project } = await scene();
+    const a = await createTask(student.id, project.id, { title: "任务" });
+    const draft = await insertDraft(student.id, project.id, [a.id]);
+    const { input } = await confirmInput(student.id, project.id, draft.id);
+    const first = await confirmIterationDraft(student.id, project.id, draft.id, input);
+    await startIteration(student.id, project.id, first.iteration.id, { requestId: rid(), expectedRevision: first.iteration.revision });
+    const replay = await confirmIterationDraft(student.id, project.id, draft.id, input);
+    expect(replay).toEqual({ ...first, replayed: true });
+    await expect(confirmIterationDraft(student.id, project.id, draft.id, { ...input, expectedDraftRevision: 99 })).rejects.toThrow("不同内容");
   });
 });

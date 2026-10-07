@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { DbTx } from "@/db";
 import { writeRequests } from "@/db/schema";
+import { lockTaskWriteAccess } from "./task-write-access";
 import { ConflictError } from "./errors";
 
 // C / P0：requestId 幂等。
@@ -19,7 +20,12 @@ import { ConflictError } from "./errors";
 // 首个事务若回滚，认领也一并回滚，下一次重试是货真价实的首次请求。
 
 export function hashRequest(payload: unknown): string {
-  return createHash("sha256").update(JSON.stringify(payload) ?? "null").digest("hex");
+  const serialized = JSON.stringify(payload, (_key, value) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]]))
+      : value,
+  );
+  return createHash("sha256").update(serialized ?? "null").digest("hex");
 }
 
 export type WriteRequestKey = {
@@ -94,6 +100,7 @@ export async function runIdempotent<T>(
   payload: unknown,
   run: () => Promise<T>,
 ): Promise<T> {
+  await lockTaskWriteAccess(tx, key.actorId, key.projectId);
   const claim = await claimWriteRequest(tx, key, hashRequest(payload));
   if (claim.replay) return claim.result as T;
   return finishWriteRequest(tx, claim.id, await run());
