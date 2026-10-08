@@ -26,3 +26,4 @@ export const notifications = pgTable(
     index("notifications_recipient_read_idx").on(t.recipientId, t.readAt),
   ],
 );
+export * from "./schema/notifications";
