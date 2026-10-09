@@ -571,3 +571,38 @@ export const iterationEvents = pgTable(
   },
   (t) => [index("iteration_events_iteration_idx").on(t.iterationId, t.seq)],
 );
+
+// E / P0：通用项目活动流水（定稿 9.4 E-A01/A02）。只追加、不修改。
+// event_key 唯一，重放不会产生第二行；这是契约「用 eventKey 对活动去重」的落点。
+//
+// 刻意不加 seq：契约固定按 occurred_at desc + id 排序，uuid 主键本身就能稳定翻页。
+// iteration_events 需要 seq 是因为它只按 created_at 排且无唯一兜底，此处没有这个问题。
+// occurred_at 是业务时间（对外展示），created_at 只是本行的入库时刻，不对外。
+export const projectActivities = pgTable(
+  "project_activities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventKey: text("event_key").notNull(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // 不设外键：与 deliverable_outbox.actor_id 一致，删用户不该抹掉「谁做过这件事」的历史
+    actorId: uuid("actor_id").notNull(),
+    /** task / iteration / deliverable / feedback / comment / announcement，服务层按白名单校验 */
+    objectType: text("object_type").notNull(),
+    // 不设外键：多态指向任务/迭代/成果/反馈/评论/公告，对象本身可被删除
+    objectId: uuid("object_id").notNull(),
+    /** 与契约 ACTIVITY_EVENT_TYPES 对应 */
+    type: text("type").notNull(),
+    summary: text("summary").notNull(),
+    /** 只存白名单元信息（ID、changedFields、前后状态），绝不存私有正文 */
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("project_activities_event_key_unique").on(t.eventKey),
+    index("project_activities_project_time_idx").on(t.projectId, t.occurredAt, t.id),
+    index("project_activities_object_idx").on(t.projectId, t.objectType, t.objectId),
+  ],
+);

@@ -57,6 +57,13 @@
       "when": 1791350197619,
       "tag": "0007_sweet_silver_surfer",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791524485069,
+      "tag": "0008_e_activities_p0",
+      "breakpoints": true
     }
   ]
 }

@@ -42,6 +42,7 @@ import type {
   UnfinishedDisposition,
   UpdateIterationInput,
 } from "@/contracts/p0-p2";
+import { recordProjectActivity } from "./activity";
 import { ConflictError, NotFoundError, ValidationError, isUniqueViolation } from "./errors";
 import { normalizePage, pageResult } from "./pagination";
 import { getProjectForUser } from "./project";
@@ -615,7 +616,20 @@ export async function startIteration(
             .where(eq(iterations.id, iterationId))
             .returning();
           await recordEvent(tx, projectId, iterationId, "started", actorId);
-          return toIteration(row);
+          const iteration = toIteration(row);
+          // E / P0：迭代动态。occurredAt 取本行的 startedAt（DB 时钟），不用宿主机时间。
+          await recordProjectActivity(tx, {
+            eventKey: `iteration.started:${iterationId}`,
+            projectId,
+            actorId,
+            objectType: "iteration",
+            objectId: iterationId,
+            type: "iteration.started",
+            summary: `开始了迭代「${iteration.name}」`,
+            occurredAt: iteration.startedAt ?? iteration.updatedAt,
+            metadata: { iterationId },
+          });
+          return iteration;
         } catch (e) {
           if (isUniqueViolation(e)) throw new ConflictError("该项目已有进行中的迭代");
           throw e;
@@ -977,6 +991,7 @@ export async function completeIteration(
           })
           .where(eq(iterations.id, iterationId))
           .returning();
+        const iteration = toIteration(row);
 
         const movedTaskIds: string[] = [];
         for (const d of input.unfinishedDisposition) {
@@ -1005,7 +1020,7 @@ export async function completeIteration(
           .values({
             projectId,
             iterationId,
-            iterationSnapshot: toIteration(row),
+            iterationSnapshot: iteration,
             taskSnapshots: taskRows.map(toTaskSummary),
             stats,
             dispositions: input.unfinishedDisposition,
@@ -1017,7 +1032,26 @@ export async function completeIteration(
           movedTaskIds,
         });
 
-        return { iteration: toIteration(row), historyId: history.id, movedTaskIds };
+        // E / P0：迭代动态。统计口径与本轮快照一致（仅主任务），不另算一份。
+        await recordProjectActivity(tx, {
+          eventKey: `iteration.completed:${iterationId}`,
+          projectId,
+          actorId,
+          objectType: "iteration",
+          objectId: iterationId,
+          type: "iteration.completed",
+          summary: `结束了迭代「${iteration.name}」（${doneCount}/${taskTotal} 完成）`,
+          occurredAt: iteration.completedAt ?? iteration.updatedAt,
+          metadata: {
+            iterationId,
+            historyId: history.id,
+            taskTotal,
+            doneCount,
+            doneRatio: stats.doneRatio,
+          },
+        });
+
+        return { iteration, historyId: history.id, movedTaskIds };
       },
     ),
   );
@@ -1097,7 +1131,25 @@ export async function saveIterationRetrospective(
           await recordEvent(tx, projectId, iterationId, "retrospective_saved", actorId, {
             revision: row.revision,
           });
-          return toRetrospective(row);
+          const retrospective = toRetrospective(row);
+          // E / P0：复盘动态。只写「谁在第几版保存了」，复盘正文一个字都不进活动表。
+          await recordProjectActivity(tx, {
+            eventKey: `retrospective.saved:${row.id}:${row.revision}`,
+            projectId,
+            actorId,
+            // ActivityItem.objectType 没有 retrospective 这一档，复盘挂在它描述的那轮迭代上
+            objectType: "iteration",
+            objectId: iterationId,
+            type: "retrospective.saved",
+            summary: `保存了迭代「${current.name}」的复盘（第 ${row.revision} 版）`,
+            occurredAt: retrospective.updatedAt,
+            metadata: {
+              iterationId,
+              retrospectiveId: row.id,
+              revision: row.revision,
+            },
+          });
+          return retrospective;
         }
 
         if (input.expectedRevision !== undefined) {
@@ -1119,7 +1171,23 @@ export async function saveIterationRetrospective(
         await recordEvent(tx, projectId, iterationId, "retrospective_saved", actorId, {
           revision: 1,
         });
-        return toRetrospective(row);
+        const retrospective = toRetrospective(row);
+        await recordProjectActivity(tx, {
+          eventKey: `retrospective.saved:${row.id}:${row.revision}`,
+          projectId,
+          actorId,
+          objectType: "iteration",
+          objectId: iterationId,
+          type: "retrospective.saved",
+          summary: `保存了迭代「${current.name}」的复盘（第 ${row.revision} 版）`,
+          occurredAt: retrospective.updatedAt,
+          metadata: {
+            iterationId,
+            retrospectiveId: row.id,
+            revision: row.revision,
+          },
+        });
+        return retrospective;
       },
     ),
   );
