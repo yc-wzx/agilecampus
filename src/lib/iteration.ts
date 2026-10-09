@@ -43,6 +43,7 @@ import type {
   UpdateIterationInput,
 } from "@/contracts/p0-p2";
 import { recordProjectActivity } from "./activity";
+import { recordNotificationIntent } from "./notifications";
 import { ConflictError, NotFoundError, ValidationError, isUniqueViolation } from "./errors";
 import { normalizePage, pageResult } from "./pagination";
 import { getProjectForUser } from "./project";
@@ -1051,6 +1052,14 @@ export async function completeIteration(
           },
         });
 
+        const recipients = await tx.select({ userId: teamMembers.userId }).from(teamMembers)
+          .innerJoin(projects, eq(projects.teamId, teamMembers.teamId)).where(eq(projects.id, projectId));
+        await recordNotificationIntent(tx, { eventKey: `iteration.completed:${iterationId}`, projectId, actorId,
+          type: "iteration.completed", recipientIds: recipients.map(member => member.userId),
+          summary: `迭代「${iteration.name}」已结束，可查看历史快照与复盘。`,
+          sourceRef: { sourceKind: "iteration", sourceId: iterationId, projectId,
+            sourceHref: `/projects/${projectId}/iterations/${iterationId}`, evidenceKey: `iteration-history:${history.id}`, availability: "available" },
+        });
         return { iteration, historyId: history.id, movedTaskIds };
       },
     ),

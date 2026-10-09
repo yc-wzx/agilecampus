@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/db";
-import { projectActivities } from "@/db/schema";
+import { projectActivities, tasks } from "@/db/schema";
 import { listProjectActivities } from "@/lib/activity";
 import {
   assignTasks,
@@ -259,6 +259,29 @@ describe("任务写入产生的活动", () => {
     expect(typesOf(items)).toEqual(["task.blocked", "task.created", "task.unblocked"]);
   });
 
+  it("只改阻塞原因不重复记阻塞，同值提交不产生活动，首次阻塞时间保留", async () => {
+    const { owner, project } = await scene();
+    const { task } = await createTaskV1(owner.id, project.id, { requestId: rid(), title: "阻塞状态回归" });
+    const blocked = await setTaskBlocked(owner.id, project.id, task.id, {
+      requestId: rid(), expectedUpdatedAt: task.updatedAt, isBlocked: true, blockedReason: "私有原因一",
+    });
+    const changed = await setTaskBlocked(owner.id, project.id, task.id, {
+      requestId: rid(), expectedUpdatedAt: blocked.task.updatedAt, isBlocked: true, blockedReason: "私有原因二",
+    });
+    expect(changed.task.blockedAt).toBe(blocked.task.blockedAt);
+    const unchanged = await setTaskBlocked(owner.id, project.id, task.id, {
+      requestId: rid(), expectedUpdatedAt: changed.task.updatedAt, isBlocked: true, blockedReason: "私有原因二",
+    });
+    await setTaskBlocked(owner.id, project.id, task.id, {
+      requestId: rid(), expectedUpdatedAt: unchanged.task.updatedAt, isBlocked: false,
+    });
+    const items = await activities(owner.id, project.id);
+    expect(typesOf(items)).toEqual(["task.blocked", "task.created", "task.unblocked", "task.updated"]);
+    const updated = items.find(item => item.type === "task.updated")!;
+    expect(await storedMetadata(updated.id)).toMatchObject({ changedFields: ["blockedReason"] });
+    expect(JSON.stringify(items)).not.toContain("私有原因");
+  });
+
   it("同一 requestId 重放不会多出一条活动（幂等账本挡在前头）", async () => {
     const { owner, project } = await scene();
     const requestId = rid();
@@ -324,9 +347,10 @@ describe("迭代写入产生的活动", () => {
       expectedRevision: iteration.revision,
       tasks: [{ taskId: task.id, expectedUpdatedAt: task.updatedAt }],
     });
+    const [assignedTask] = await db.select().from(tasks).where(eq(tasks.id, task.id));
     await updateTaskV1(owner.id, project.id, task.id, {
       requestId: rid(),
-      expectedUpdatedAt: task.updatedAt,
+      expectedUpdatedAt: assignedTask.updatedAt.toISOString(),
       patch: { status: "done" },
     });
 
@@ -390,15 +414,14 @@ describe("迭代写入产生的活动", () => {
   });
 });
 
-describe("已知的覆盖缺口", () => {
+describe("旧任务入口的活动接入", () => {
   beforeEach(resetDb);
 
-  it("经旧 updateTask 的改动不产生活动：看板拖拽 / Agent API / plan_sprint 走的就是这条", async () => {
+  it("旧 updateTask 同样记录创建和完成：覆盖看板拖拽 / Agent API / plan_sprint", async () => {
     const { owner, project } = await scene();
     const created = await createTask(owner.id, project.id, { title: "看板拖拽的任务" });
     await updateTask(owner.id, created.id, { status: "done" });
 
-    // 这是如实记录缺口，不是在为它辩护：要补必须把调用点收敛到 V1。
-    expect(await activities(owner.id, project.id)).toEqual([]);
+    expect(typesOf(await activities(owner.id, project.id))).toEqual(["task.completed", "task.created"]);
   });
 });

@@ -15,6 +15,8 @@ import { AppError, ConflictError, ForbiddenError, NotFoundError } from "./errors
 import { getTeamMembership } from "./team";
 import { getProjectForUser } from "./project";
 import { notifyTaskAssigned, notifyTaskCompleted } from "./notify";
+import { recordTaskMutation } from "./task-events";
+import { lockTaskWriteAccess } from "./task-write-access";
 
 // 任务写操作角色：admin + student（teacher 只读，设计文档 §5）
 export const TASK_WRITE_ROLES = ["admin", "student"];
@@ -70,8 +72,14 @@ export async function createTask(
     acceptanceCriteria?: string;
   },
   opts?: { tx?: DbTx },
-) {
-  const exec = opts?.tx ?? db;
+): Promise<typeof tasks.$inferSelect> {
+  if (!opts?.tx) {
+    const created = await db.transaction(tx => createTask(actorId, projectId, input, { tx }));
+    if (created.assigneeId) void notifyTaskAssigned(created);
+    return created;
+  }
+  const exec = opts.tx;
+  await lockTaskWriteAccess(exec, actorId, projectId);
   const access = await requireTaskWrite(actorId, projectId);
   if (input.assigneeId) await validateAssignee(access.project.teamId, input.assigneeId);
   if (input.milestoneId) await validateMilestone(projectId, input.milestoneId);
@@ -95,8 +103,7 @@ export async function createTask(
     })
     .returning();
 
-  // 非事务路径：即时通知（fire-and-forget，通知内部已吞异常）。事务路径由调用方提交后补发。
-  if (!opts?.tx && task.assigneeId) void notifyTaskAssigned(task);
+  await recordTaskMutation(exec, actorId, null, task);
   return task;
 }
 
@@ -116,14 +123,20 @@ export async function updateTask(
     completionNote?: string | null;
   },
   opts?: { tx?: DbTx; expectedUpdatedAt?: Date | string },
-) {
-  const exec = opts?.tx ?? db;
+): Promise<typeof tasks.$inferSelect> {
+  if (!opts?.tx) {
+    const [previous] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+    const updated = await db.transaction(tx => updateTask(actorId, taskId, patch, { ...opts, tx }));
+    if (patch.assigneeId && patch.assigneeId !== previous?.assigneeId) void notifyTaskAssigned(updated);
+    if (patch.status === "done" && previous?.status !== "done") void notifyTaskCompleted(updated, actorId);
+    return updated;
+  }
+  const exec = opts.tx;
   const base = exec.select().from(tasks).where(eq(tasks.id, taskId));
-  // 乐观锁：带 expectedUpdatedAt 时先锁行再比对，避免「查一次时间后无条件覆盖」的竞态。
-  // 不带时保持旧的单次读，且不取行锁（旧看板/Agent API/plan_sprint 走的就是这条）。
-  const [task] =
-    opts?.expectedUpdatedAt !== undefined ? await base.for("update") : await base;
+  // 所有入口锁行读取真实前状态；V1 额外核对版本，旧入口也不能用过时快照记录事件。
+  const [task] = await base.for("update");
   if (!task) throw new NotFoundError("任务不存在");
+  await lockTaskWriteAccess(exec, actorId, task.projectId);
 
   const access = await requireTaskWrite(actorId, task.projectId);
 
@@ -149,7 +162,7 @@ export async function updateTask(
   // 显式白名单构造，勿用 ...patch 展开：运行时宽对象可夹带 projectId/sortOrder 等越权字段
   const [updated] = await exec
     .update(tasks)
-    // updatedAt 取 DB 时钟（now()）而非宿主机 new Date()：与 createdAt 的 defaultNow() 同源，保证单调性
+    // 同一事务内多次写入也至少推进一毫秒，事件键与前端可回传版本保持一致。
     .set({
       ...(patch.title !== undefined && { title: patch.title }),
       ...(patch.description !== undefined && { description: patch.description }),
@@ -163,18 +176,13 @@ export async function updateTask(
       ...(patch.status !== undefined && { status: patch.status }),
       ...(patch.priority !== undefined && { priority: patch.priority }),
       ...(patch.completionNote !== undefined && { completionNote: patch.completionNote }),
-      updatedAt: sql`now()`,
+      updatedAt: sql`greatest(date_trunc('milliseconds', clock_timestamp()), date_trunc('milliseconds', ${tasks.updatedAt}) + interval '1 millisecond')`,
     })
     .where(eq(tasks.id, taskId))
     .returning();
   if (!updated) throw new NotFoundError("任务不存在");
 
-  if (!opts?.tx) {
-    // 改派：通知新负责人
-    if (patch.assigneeId && patch.assigneeId !== task.assigneeId) void notifyTaskAssigned(updated);
-    // 完成：通知创建者(≠操作者)
-    if (patch.status === "done" && task.status !== "done") void notifyTaskCompleted(updated, actorId);
-  }
+  await recordTaskMutation(exec, actorId, task, updated);
   return updated;
 }
 

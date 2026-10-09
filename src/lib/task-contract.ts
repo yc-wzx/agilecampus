@@ -10,7 +10,6 @@ import {
   type DeleteTaskV1Result,
   type PageResult,
   type ProjectTaskStats,
-  type RecordProjectActivityInput,
   type SetTaskBlockedInput,
   type SetTaskBlockedResult,
   type SourceRef,
@@ -243,179 +242,6 @@ function taskKey(projectId: string, actorId: string, operation: string, requestI
   return { projectId, actorId, operation, requestId };
 }
 
-/* ------------------------------------------------------------------ *
- * E / P0：任务活动（定稿 §9.4 事件目录）
- *
- * 三个 V1 写操作在各自事务里追加活动，与业务同生共死。一次修改可以产生不同 type、
- * 各最多一条；metadata 只放 ID 与状态，任务的描述 / 验收标准 / 完成说明正文一律不进
- * ——那是 E-A01 侧的 metadata 白名单在兜底，这里从源头就不传。
- * ------------------------------------------------------------------ */
-
-/** 任务活动的事件键。带上写入后的 updatedAt：同一操作重放只会落一条。 */
-function taskActivityKey(type: string, taskId: string, occurredAt: string) {
-  return `${type}:${taskId}:${occurredAt}`;
-}
-
-/** 活动摘要里用的字段中文名。只用于拼句子，不影响落库字段。 */
-const TASK_FIELD_LABELS: Record<string, string> = {
-  title: "标题",
-  description: "描述",
-  acceptanceCriteria: "验收标准",
-  startDate: "开始日期",
-  dueDate: "截止日期",
-  milestoneId: "里程碑",
-  priority: "优先级",
-  status: "状态",
-  completionNote: "完成说明",
-};
-
-/** 丢掉 undefined 的 metadata 构造器：「没传这个字段」与「传了 null」在活动里是两回事。 */
-function meta(
-  entries: Record<string, string | number | boolean | null | string[] | undefined>,
-): Record<string, string | number | boolean | null | string[]> {
-  const out: Record<string, string | number | boolean | null | string[]> = {};
-  for (const [key, value] of Object.entries(entries)) {
-    if (value !== undefined) out[key] = value;
-  }
-  return out;
-}
-
-/** 改任务前的快照。没有它就分不清「改成 done」和「本来就是 done」，无法定事件类型。 */
-type TaskBeforeSnapshot = {
-  title: string;
-  description: string | null;
-  acceptanceCriteria: string | null;
-  status: TaskStatus;
-  assigneeId: string | null;
-  startDate: string | null;
-  dueDate: string | null;
-  milestoneId: string | null;
-  priority: TaskPriority;
-  completionNote: string | null;
-};
-
-/** updateTaskV1 的 patch 里除 status / assigneeId 之外还能改的字段（各对应一个中文名）。 */
-const TASK_PATCH_FIELDS = [
-  "title",
-  "description",
-  "acceptanceCriteria",
-  "startDate",
-  "dueDate",
-  "milestoneId",
-  "priority",
-  "completionNote",
-] as const;
-
-async function recordTaskUpdateActivities(
-  tx: DbTx,
-  args: {
-    actorId: string;
-    projectId: string;
-    task: TaskSummary;
-    before: TaskBeforeSnapshot;
-    patch: UpdateTaskV1Input["patch"];
-  },
-): Promise<void> {
-  const { actorId, projectId, task, before, patch } = args;
-  const objectType = "task" as const;
-  const occurredAt = task.updatedAt;
-  const events: RecordProjectActivityInput[] = [];
-
-  // 状态：只有「非完成 -> 完成」算完成，「完成 -> 非完成」算重开。
-  // todo <-> doing 没有对应的事件类型，退回 task.updated——不硬把它说成 completed。
-  const changedFields: string[] = [];
-  if (patch.status !== undefined && patch.status !== before.status) {
-    if (before.status !== "done" && patch.status === "done") {
-      events.push({
-        eventKey: taskActivityKey("task.completed", task.id, occurredAt),
-        projectId,
-        actorId,
-        objectType,
-        objectId: task.id,
-        type: "task.completed",
-        summary: `完成了任务《${task.title}》`,
-        occurredAt,
-        metadata: meta({
-          taskId: task.id,
-          iterationId: task.iterationId,
-          fromStatus: before.status,
-        }),
-      });
-    } else if (before.status === "done" && patch.status !== "done") {
-      events.push({
-        eventKey: taskActivityKey("task.reopened", task.id, occurredAt),
-        projectId,
-        actorId,
-        objectType,
-        objectId: task.id,
-        type: "task.reopened",
-        summary: `重新打开了任务《${task.title}》`,
-        occurredAt,
-        metadata: meta({
-          taskId: task.id,
-          iterationId: task.iterationId,
-          fromStatus: before.status,
-        }),
-      });
-    } else {
-      changedFields.push("status");
-    }
-  }
-
-  // 改派单列一条：负责人变更值得在动态里被单独看见。清空负责人走同一个 type，摘要如实写。
-  if (patch.assigneeId !== undefined && patch.assigneeId !== before.assigneeId) {
-    events.push({
-      eventKey: taskActivityKey("task.assigned", task.id, occurredAt),
-      projectId,
-      actorId,
-      objectType,
-      objectId: task.id,
-      type: "task.assigned",
-      summary: task.assigneeName
-        ? `把任务《${task.title}》指派给 ${task.assigneeName}`
-        : `取消了任务《${task.title}》的负责人`,
-      occurredAt,
-      metadata: meta({
-        taskId: task.id,
-        fromAssigneeId: before.assigneeId,
-        toAssigneeId: task.assigneeId,
-      }),
-    });
-  }
-
-  // 其余变化合成**一条** task.updated，变了的字段名列进 changedFields。
-  // 拆成多条会撞同一个事件键——同任务、同类型、同 updatedAt 只允许一条。
-  for (const field of TASK_PATCH_FIELDS) {
-    if (patch[field] !== undefined && patch[field] !== before[field]) changedFields.push(field);
-  }
-
-  if (changedFields.length > 0) {
-    const labels = changedFields.map((field) => TASK_FIELD_LABELS[field] ?? field).join("、");
-    events.push({
-      eventKey: taskActivityKey("task.updated", task.id, occurredAt),
-      projectId,
-      actorId,
-      objectType,
-      objectId: task.id,
-      type: "task.updated",
-      summary: `更新了任务《${task.title}》的${labels}`,
-      occurredAt,
-      metadata: meta({
-        taskId: task.id,
-        iterationId: task.iterationId,
-        changedFields,
-        fromStatus: before.status,
-        toStatus: task.status,
-        fromAssigneeId: before.assigneeId,
-        toAssigneeId: task.assigneeId,
-        dueDate: task.dueDate,
-      }),
-    });
-  }
-
-  for (const event of events) await recordProjectActivity(tx, event);
-}
-
 export async function createTaskV1(
   actorId: string,
   projectId: string,
@@ -444,23 +270,7 @@ export async function createTaskV1(
           { tx },
         );
         const task = await summaryById(tx, projectId, created.id);
-        await recordProjectActivity(tx, {
-          eventKey: `task.created:${task.id}`,
-          projectId,
-          actorId,
-          objectType: "task",
-          objectId: task.id,
-          type: "task.created",
-          summary: `创建了任务《${task.title}》`,
-          occurredAt: task.updatedAt,
-          metadata: meta({
-            taskId: task.id,
-            status: task.status,
-            assigneeId: task.assigneeId,
-            dueDate: task.dueDate,
-            iterationId: task.iterationId,
-          }),
-        });
+
         return { task };
       },
     ),
@@ -479,38 +289,13 @@ export async function updateTaskV1(
       taskKey(projectId, actorId, "task.update", input.requestId),
       { taskId, ...input },
       async () => {
-        // 改之前的快照。这一步不加行锁——真正的乐观锁在 updateTask 里（它 for("update")
-        // 后比对 expectedUpdatedAt）；这份快照只用来算「这次改了什么」。
-        const [before] = await tx
-          .select({
-            title: tasks.title,
-            description: tasks.description,
-            acceptanceCriteria: tasks.acceptanceCriteria,
-            status: tasks.status,
-            assigneeId: tasks.assigneeId,
-            startDate: tasks.startDate,
-            dueDate: tasks.dueDate,
-            milestoneId: tasks.milestoneId,
-            priority: tasks.priority,
-            completionNote: tasks.completionNote,
-          })
-          .from(tasks)
-          .where(and(eq(tasks.id, taskId), eq(tasks.projectId, projectId)));
-        if (!before) throw new NotFoundError("任务不存在");
-
         // expectedUpdatedAt 交给 updateTask 在事务内锁行比对（定稿 §9.1：不能光查一次时间）
         const updated = await updateTask(actorId, taskId, input.patch, {
           tx,
           expectedUpdatedAt: input.expectedUpdatedAt,
         });
         const task = await summaryById(tx, projectId, updated.id);
-        await recordTaskUpdateActivities(tx, {
-          actorId,
-          projectId,
-          task,
-          before,
-          patch: input.patch,
-        });
+
         return { task };
       },
     ),
@@ -643,7 +428,8 @@ export async function setTaskBlocked(
         await requireTaskWrite(actorId, projectId);
 
         const [task] = await tx
-          .select({ id: tasks.id, projectId: tasks.projectId, updatedAt: tasks.updatedAt })
+          .select({ id: tasks.id, projectId: tasks.projectId, updatedAt: tasks.updatedAt,
+            isBlocked: tasks.isBlocked, blockedReason: tasks.blockedReason })
           .from(tasks)
           .where(eq(tasks.id, taskId))
           .for("update");
@@ -665,30 +451,28 @@ export async function setTaskBlocked(
             isBlocked: input.isBlocked,
             blockedReason: input.isBlocked ? reason : null,
             blockedAt: input.isBlocked ? sql`coalesce(${tasks.blockedAt}, now())` : null,
-            updatedAt: sql`now()`,
+            updatedAt: sql`greatest(date_trunc('milliseconds', clock_timestamp()), date_trunc('milliseconds', ${tasks.updatedAt}) + interval '1 millisecond')`,
           })
           .where(eq(tasks.id, taskId));
 
         // 名字不复用上面的 task：那一份是带行锁的原始行，这里是给调用方的 TaskSummary
         const updated = await summaryById(tx, projectId, taskId);
-        const type = input.isBlocked ? "task.blocked" : "task.unblocked";
-        await recordProjectActivity(tx, {
-          eventKey: taskActivityKey(type, taskId, updated.updatedAt),
+        const changedState = task.isBlocked !== input.isBlocked;
+        const changedReason = task.blockedReason !== (input.isBlocked ? reason : null);
+        const type = changedState ? input.isBlocked ? "task.blocked" : "task.unblocked" : "task.updated";
+        if (changedState || changedReason) await recordProjectActivity(tx, {
+          eventKey: `${type}:${taskId}:${updated.updatedAt}`,
           projectId,
           actorId,
           objectType: "task",
           objectId: taskId,
           type,
-          summary: input.isBlocked
-            ? `阻塞了任务《${updated.title}》`
-            : `解除了任务《${updated.title}》的阻塞`,
+          summary: !changedState ? `更新了任务《${updated.title}》的阻塞原因`
+            : input.isBlocked ? `阻塞了任务《${updated.title}》` : `解除了任务《${updated.title}》的阻塞`,
           occurredAt: updated.updatedAt,
           // 阻塞原因的原文是私有协作内容，活动里只留长度，不留正文
-          metadata: meta(
-            input.isBlocked
-              ? { taskId, blockedReasonLength: reason.length }
-              : { taskId },
-          ),
+          metadata: !changedState ? { taskId, changedFields: ["blockedReason"] }
+            : input.isBlocked ? { taskId, blockedReasonLength: reason.length } : { taskId },
         });
         return { task: updated };
       },
