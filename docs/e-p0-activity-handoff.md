@@ -104,7 +104,7 @@ mapDeliverableEventToActivity(event: DeliverableEvent, titles?: DeliverableEvent
   - 快照 `id` = `e388c8bc-1799-490c-a34d-1489be16e9e2`，`prevId` = `7cde4caf-142e-43e9-9669-a6542627b281`（0007 的 id）。
 - **不新增枚举、不改动任何已有表，纯增量。**
 - 表结构要点：`actor_id` / `object_id` **刻意不设外键**（前者同 `deliverable_outbox.actor_id` 的惯例：删用户不该抹掉历史；后者是多态引用）。`project_id` 有外键、`ON DELETE cascade`。**刻意不加 `seq`**：§9.4 固定按 `occurredAt desc + id` 排序，uuid 主键已能稳定翻页。
-- **请在有依赖的环境跑一次 `npm run db:generate` 复核无差异。若有差异，以 drizzle-kit 的产出为准。** 这是本次唯一需要外部确认的产物。
+- **已复核通过**：`npm run db:generate` 返回 `No schema changes, nothing to migrate`，手写快照与 drizzle-kit 的推导一致（见 §12）。
 
 ## 8. 可复制的调用例子
 
@@ -176,17 +176,29 @@ const result = await dispatchDeliverableEvents(handleDeliverableEvent);
 - **D**：`handleDeliverableEvent` 复用了 outbox 的 `eventKey` 作为活动事件键，并会**读** `deliverables` / `milestones` / `tasks` 的标题用于摘要。`deliverable-events.ts` 本身**未改动**。
 - **F**：见 §10。
 
-## 12. 验证方式（本机跑不了，交付后按序执行）
+## 12. 验证情况
 
-我交付时的环境**没有 node_modules、没有 `.env.test`、没有数据库**，按约定「不动环境、只写代码」，因此**以下全部未执行**，测试也只写不跑：
+### 已实测通过（Node.js v24.21.0）
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 类型检查 | `npx tsc --noEmit` | **0 error** |
+| Lint | `npm run lint` | **0 error**（唯一 warning 在 `tests/agent-api.test.ts`，仓库原有，与本次无关） |
+| 迁移快照 | `npm run db:generate` | `No schema changes, nothing to migrate` —— **手写的 0008 与 drizzle-kit 按 `schema.ts` 的推导完全一致** |
+| 纯函数测试 | `npx vitest run tests/activity.test.ts tests/deliverable-sink.test.ts -t "computeActivityCoverageFromMin\|mapDeliverableEventToActivity"` | **8 passed** |
+
+纯函数那 8 项覆盖的正是最容易出错的逻辑：coverage 诚实口径、事件映射、标题兜底、未登记类型拒绝、payload 缺键报错。
+
+### 尚未执行（缺 PostgreSQL）
+
+21 项依赖数据库的测试与页面实测都需要 PostgreSQL 16。装好并建出 `agilecampus_test` 库后：
 
 ```bash
 npm install
-# 建 .env.test（DATABASE_URL 指向测试库）
-npm run db:generate            # ⚠️ 复核手写的 0008 快照/日志有无差异，有差异以它为准
+# .env.test 指向测试库：
+# DATABASE_URL=postgres://agilecampus:agilecampus_dev@localhost:5432/agilecampus_test
 npm run db:push:test
 npm test                       # 关注 activity / activity-events / deliverable-sink 三个文件
-npx tsc --noEmit && npm run lint
 npm run dev                    # 打开 /projects/{id}/overview
 ```
 
