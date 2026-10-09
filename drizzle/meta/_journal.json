@@ -64,6 +64,13 @@
       "when": 1791524485069,
       "tag": "0008_e_activities_p0",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791552193420,
+      "tag": "0009_f_notifications_p0",
+      "breakpoints": true
     }
   ]
 }

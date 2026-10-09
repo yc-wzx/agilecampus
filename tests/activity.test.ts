@@ -239,8 +239,8 @@ describe("recordProjectActivity / listProjectActivities (E-A01 / E-A02)", () => 
 
     const page = await listProjectActivities(owner.id, project.id);
     expect(page.coverage.availableFrom).toBe("2026-10-06T02:00:00.000Z");
-    // 不指定窗口 → 请求的就是「全部」，没有可缺失的前段
-    expect(page.coverage.complete).toBe(true);
+    // 请求全部时，最早记录之前仍有未留痕的历史，不能声称完整。
+    expect(page.coverage.complete).toBe(false);
 
     // 窗口起点（10-06 00:00 +08:00 = 10-05T16:00Z）早于最早记录 → 如实标为不完整
     const early = await listProjectActivities(owner.id, project.id, {

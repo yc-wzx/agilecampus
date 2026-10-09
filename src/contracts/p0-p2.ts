@@ -703,3 +703,14 @@ export type TeacherProjectOverview = {
   pendingItems: QueryPart<PendingItems>;
   asOf: string;
 };
+export type NotificationItem = {
+  id: string; eventKey: string; recipientId: string; projectId: string;
+  type: string; title: string; summary: string | null; sourceRef: SourceRef;
+  createdAt: string; readAt: string | null;
+};
+export type NotificationFilters = PageInput & { unreadOnly?: boolean; projectId?: string };
+export type MarkAllNotificationsInput = { requestId: string; beforeCreatedAt: string; projectId?: string };
+export type RecordNotificationIntentInput = {
+  eventKey: string; projectId: string; actorId: string; type: string;
+  recipientIds: string[]; sourceRef: SourceRef; summary: string;
+};

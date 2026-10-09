@@ -606,3 +606,37 @@ export const projectActivities = pgTable(
     index("project_activities_object_idx").on(t.projectId, t.objectType, t.objectId),
   ],
 );
+
+
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    recipientId: uuid("recipient_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    title: text("title").notNull(),
+    summary: text("summary"),
+    sourceType: text("source_type").notNull(),
+    sourceId: text("source_id").notNull(),
+    href: text("href").notNull(),
+    eventKey: text("event_key").notNull(),
+    channel: text("channel").notNull().default("in_app"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    readAt: timestamp("read_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("notifications_event_recipient_channel_uq")
+      .on(t.eventKey, t.recipientId, t.channel),
+    index("notifications_recipient_created_idx").on(t.recipientId, t.createdAt),
+    index("notifications_recipient_read_idx").on(t.recipientId, t.readAt),
+  ],
+);
+export const notificationReadRequests = pgTable("notification_read_requests", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  recipientId: uuid("recipient_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  requestId: uuid("request_id").notNull(),
+  requestHash: text("request_hash").notNull(),
+  result: jsonb("result").$type<{ markedCount: number; asOf: string }>(),
+}, (t) => [uniqueIndex("notification_read_requests_user_request_unique").on(t.recipientId, t.requestId)]);

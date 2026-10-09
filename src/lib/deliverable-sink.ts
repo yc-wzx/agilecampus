@@ -1,10 +1,11 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db, type DbTx } from "@/db";
-import { deliverables, milestones, tasks } from "@/db/schema";
+import { deliverables, deliverableVersions, milestones, tasks } from "@/db/schema";
 import type { RecordProjectActivityInput } from "@/contracts/p0-p2";
 import { recordProjectActivity } from "./activity";
 import type { DeliverableEvent } from "./deliverable-events";
 import { ValidationError } from "./errors";
+import { recordNotificationIntent } from "./notifications";
 
 // E / P0：成果 outbox 的消费端（定稿 §8「合并 sink」的 E 部分）。
 //
@@ -119,12 +120,13 @@ async function lookupTitles(
     case "deliverable.submitted":
     case "deliverable.approved":
     case "deliverable.changes_requested": {
-      const id = event.payload?.deliverableId;
+      const id = event.payload?.versionId;
       if (!id) return {};
       const [row] = await tx
-        .select({ title: deliverables.title })
-        .from(deliverables)
-        .where(eq(deliverables.id, id));
+        .select({ title: deliverableVersions.title })
+        .from(deliverableVersions)
+        .innerJoin(deliverables, eq(deliverables.id, deliverableVersions.deliverableId))
+        .where(and(eq(deliverableVersions.id, id), eq(deliverables.projectId, event.projectId)));
       return { deliverableTitle: row?.title ?? null };
     }
     case "milestone.feedback": {
@@ -160,9 +162,21 @@ async function lookupTitles(
 export async function handleDeliverableEvent(event: DeliverableEvent): Promise<void> {
   await db.transaction(async (tx) => {
     const titles = await lookupTitles(tx, event);
-    await recordProjectActivity(tx, mapDeliverableEventToActivity(event, titles));
-
-    // F 扩展点：通知意图（recordNotificationIntent(tx, …)）加在这一行下面，
-    // 与活动共用这个事务，保证「动态写了但通知没写」不会发生。E 不实现它。
+    const activity = mapDeliverableEventToActivity(event, titles);
+    await recordProjectActivity(tx, activity);
+    const deliverableId = event.payload.deliverableId;
+    const taskId = event.payload.taskId;
+    const sourceKind = deliverableId ? "deliverable" as const : taskId ? "task" as const : "feedback" as const;
+    const sourceId = deliverableId ?? taskId ?? event.payload.feedbackId;
+    const params = new URLSearchParams();
+    if (event.payload.versionId) params.set("versionId", event.payload.versionId);
+    if (event.payload.feedbackId) params.set("feedbackId", event.payload.feedbackId);
+    const sourceHref = deliverableId ? `/projects/${event.projectId}/deliverables/${deliverableId}?${params}`
+      : taskId ? `/projects/${event.projectId}?task=${taskId}` : null;
+    await recordNotificationIntent(tx, { eventKey: event.eventKey, projectId: event.projectId, actorId: event.actorId,
+      type: event.type, recipientIds: event.recipientIds, summary: activity.summary,
+      sourceRef: { sourceKind, sourceId, projectId: event.projectId, sourceHref,
+        evidenceKey: `deliverable-event:${event.eventKey}`, availability: "available" },
+    });
   });
 }

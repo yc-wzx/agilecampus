@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, type DbTx } from "@/db";
-import { projectActivities } from "@/db/schema";
+import { projectActivities, projects, teamMembers } from "@/db/schema";
 import {
   ACTIVITY_EVENT_TYPES,
   ACTIVITY_OBJECT_TYPES,
@@ -172,16 +172,20 @@ export function computeActivityCoverageFromMin(
   const windowStart = fromDate ? new Date(`${fromDate}T00:00:00+08:00`).toISOString() : null;
   return {
     availableFrom: minIso,
-    complete: windowStart === null || windowStart >= minIso,
+    complete: windowStart !== null && windowStart >= minIso,
     note: "活动记录自可用起点起可核验；此前的操作没有回填，不代表没有发生过。",
   };
 }
 
-async function activityCoverage(projectId: string, fromDate?: string): Promise<QueryCoverage> {
+function currentMember(actorId: string) {
+  return sql`exists (select 1 from ${projects} p join ${teamMembers} m on m.team_id = p.team_id
+    where p.id = ${projectActivities.projectId} and m.user_id = ${actorId})`;
+}
+async function activityCoverage(actorId: string, projectId: string, fromDate?: string): Promise<QueryCoverage> {
   const [row] = await db
     .select({ min: sql<Date | null>`min(${projectActivities.occurredAt})` })
     .from(projectActivities)
-    .where(eq(projectActivities.projectId, projectId));
+    .where(and(eq(projectActivities.projectId, projectId), currentMember(actorId)));
   const minIso = row?.min ? new Date(row.min).toISOString() : null;
   return computeActivityCoverageFromMin(minIso, fromDate);
 }
@@ -228,6 +232,9 @@ export async function recordProjectActivity(
     .from(projectActivities)
     .where(eq(projectActivities.eventKey, data.eventKey));
   if (!existing) throw new ConflictError("活动事件正在写入，请重试");
+  if (existing.projectId !== data.projectId || existing.actorId !== data.actorId || existing.type !== data.type) {
+    throw new ConflictError("活动事件标识已用于其他业务");
+  }
   return toActivityItem(existing);
 }
 
@@ -256,6 +263,7 @@ export async function listProjectActivities(
   const { offset, limit } = normalizePage(data);
   const where = and(
     eq(projectActivities.projectId, projectId),
+    currentMember(actorId),
     data.objectType ? eq(projectActivities.objectType, data.objectType) : undefined,
     data.objectId ? eq(projectActivities.objectId, data.objectId) : undefined,
     data.actorId ? eq(projectActivities.actorId, data.actorId) : undefined,
@@ -284,7 +292,7 @@ export async function listProjectActivities(
   // 空结果就是空结果：items 空数组、total 0，不抛异常、不用 0 冒充失败。
   return {
     ...pageResult(rows.map(toActivityItem), counted?.total ?? 0, offset, limit),
-    coverage: await activityCoverage(projectId, data.fromDate),
+    coverage: await activityCoverage(actorId, projectId, data.fromDate),
   };
 }
 
@@ -308,7 +316,7 @@ export async function getActivityEvidence(
     .select()
     .from(projectActivities)
     .where(
-      and(eq(projectActivities.id, activityId), eq(projectActivities.projectId, projectId)),
+      and(eq(projectActivities.id, activityId), eq(projectActivities.projectId, projectId), currentMember(actorId)),
     );
   if (!row) throw new NotFoundError("活动不存在");
   return toActivityItem(row);

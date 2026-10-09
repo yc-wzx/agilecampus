@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth, signOut } from "@/lib/auth";
+import { NotificationNav } from "@/components/notification-nav";
 
 export default async function AppLayout({
   children,
@@ -13,7 +14,7 @@ export default async function AppLayout({
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-line bg-surface/85 px-4 py-3 backdrop-blur sm:px-6">
-        <div className="flex items-center gap-3 sm:gap-6">
+        <div className="flex min-w-0 flex-wrap items-center gap-3 sm:gap-6">
           <Link href="/dashboard" className="flex shrink-0 items-center gap-2">
             <span
               aria-hidden
@@ -25,7 +26,7 @@ export default async function AppLayout({
               AgileCampus
             </span>
           </Link>
-          <nav className="flex items-center gap-1">
+          <nav className="flex flex-wrap items-center gap-1">
             <Link
               href="/dashboard"
               className="whitespace-nowrap rounded-field px-2.5 py-1.5 text-sm text-ink-soft transition-colors hover:bg-primary-soft hover:text-primary"
@@ -44,6 +45,7 @@ export default async function AppLayout({
             >
               团队
             </Link>
+            <NotificationNav actorId={session.user.id} />
           </nav>
         </div>
         <details className="relative shrink-0">
