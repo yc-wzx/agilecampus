@@ -572,6 +572,78 @@ export type ActivityItem = {
   sourceRef: SourceRef;
 };
 
+/** 活动指向的对象类型。与 ActivityItem.objectType 是同一套取值，服务端用它做运行时校验。 */
+export const ACTIVITY_OBJECT_TYPES = [
+  "task",
+  "iteration",
+  "deliverable",
+  "feedback",
+  "comment",
+  "announcement",
+] as const;
+export type ActivityObjectType = (typeof ACTIVITY_OBJECT_TYPES)[number];
+
+/**
+ * 第 9.4 节 E-A01：写入一条活动。
+ * occurredAt 由真实业务在提交时确定，不由消费方猜，也不用宿主机的 new Date()。
+ * metadata 只装白名单字段（ID、变更字段名、前后状态），绝不装正文。
+ */
+export type RecordProjectActivityInput = {
+  eventKey: string;
+  projectId: string;
+  actorId: string;
+  objectType: ActivityObjectType;
+  objectId: string;
+  type: string;
+  summary: string;
+  occurredAt: string;
+  metadata?: Record<string, unknown>;
+};
+
+/** 第 9.4 节 E-A02 筛选。日期为北京时间语义：fromDate 含、toDate 不含。 */
+export type ActivityFilters = PageInput & {
+  objectType?: ActivityObjectType;
+  objectId?: string;
+  actorId?: string;
+  fromDate?: string;
+  toDate?: string;
+};
+
+/**
+ * 第 9.4 节 E-A02 返回 = 分页结果加覆盖说明。
+ * coverage 说明「从什么时候起有可核验的记录」，不用空历史冒充完整。
+ */
+export type ActivityPage = PageResult<ActivityItem> & { coverage: QueryCoverage };
+
+/**
+ * 第 9.4 节事件目录的固定 type。调用方照此写，不让消费方猜字符串。
+ * 本次 E 的 P0 只实现 task.* / iteration.* / retrospective.saved；
+ * comment.* 与 announcement.* 由 E-C01（P1）和 F 各自在自己的事务里调用。
+ */
+export const ACTIVITY_EVENT_TYPES = [
+  "task.created",
+  "task.completed",
+  "task.reopened",
+  "task.assigned",
+  "task.updated",
+  "task.blocked",
+  "task.unblocked",
+  "iteration.started",
+  "iteration.completed",
+  "retrospective.saved",
+  "comment.created",
+  "comment.updated",
+  "comment.deleted",
+  "announcement.published",
+  "announcement.withdrawn",
+  "deliverable.submitted",
+  "deliverable.approved",
+  "deliverable.changes_requested",
+  "milestone.feedback",
+  "feedback.task_created",
+] as const;
+export type ActivityEventType = (typeof ACTIVITY_EVENT_TYPES)[number];
+
 /** 第 9.8 节 F：公告。纯文本，每个项目最多一条置顶。 */
 export type AnnouncementItem = {
   id: string;

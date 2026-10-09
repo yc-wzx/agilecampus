@@ -49,7 +49,7 @@ describe("getProjectOverviewSummary (B-G01)", () => {
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  it("C/D 已交付的数据源是 ready；E/F 未交付的标为 unavailable 而不是 0", async () => {
+  it("C/D/E 已交付的数据源是 ready；F 未交付的标为 unavailable 而不是 0", async () => {
     const { project, student, owner } = await scene();
     await createMilestone(owner.id, project.id, {
       title: "中期答辩",
@@ -69,9 +69,15 @@ describe("getProjectOverviewSummary (B-G01)", () => {
     expect(summary.activeIteration.state).toBe("ready");
     expect(summary.deliverableStats.state).toBe("ready");
 
-    // E（活动）与 F（公告）仍未交付 → 显式不可用，页面据此显示“待接入”
+    // E（活动）已交付：没有活动时是空列表 + 覆盖说明，不是 unavailable，也不伪造一条
+    const activities = ready(summary.recentActivities);
+    expect(activities.items).toEqual([]);
+    expect(activities.total).toBe(0);
+    expect(activities.coverage.availableFrom).toBeNull();
+    expect(activities.coverage.complete).toBe(false);
+
+    // F（公告）仍未交付 → 显式不可用，页面据此显示“待接入”
     expect(summary.pinnedAnnouncement.state).toBe("unavailable");
-    expect(summary.recentActivities.state).toBe("unavailable");
   });
 
   it("任务统计走 C 的主任务口径：子任务不计入总数（C-T08）", async () => {

@@ -12,17 +12,17 @@
  * 3. E/F 尚未交付的服务在这里显式标注“待接入”，不伪造数据。
  *    交付后把对应 `pending(...)` 换成 `queryPart(...)` 调用即可，页面无需改动。
  */
+import { listProjectActivities } from "@/lib/activity";
 import { getProjectDeliverableStats } from "@/lib/deliverable-reporting";
 import { ForbiddenError, NotFoundError } from "@/lib/errors";
 import { getCurrentIteration } from "@/lib/iteration";
 import { getProjectDetail, getProjectForUser } from "@/lib/project";
 import { getProjectTaskStats } from "@/lib/task-contract";
 import type {
-  ActivityItem,
+  ActivityPage,
   AnnouncementItem,
   CurrentIteration,
   ErrorCode,
-  PageResult,
   ProjectDeliverableStats,
   ProjectTaskStats,
   QueryPart,
@@ -47,8 +47,8 @@ export type ProjectOverviewSummary = {
   deliverableStats: QueryPart<ProjectDeliverableStats>;
   /** F-A02，待接入 */
   pinnedAnnouncement: QueryPart<AnnouncementItem | null>;
-  /** E-A02，待接入 */
-  recentActivities: QueryPart<PageResult<ActivityItem>>;
+  /** E-A02 最近活动。E 已交付；覆盖说明一并带出，不用空数组冒充「没有发生过」 */
+  recentActivities: QueryPart<ActivityPage>;
   asOf: string;
 };
 
@@ -108,8 +108,8 @@ export async function getProjectOverviewSummary(
     queryPart("成果统计", () => getProjectDeliverableStats(actorId, projectId)),
     // F 待接入：项目置顶公告（F-A02 getPinnedAnnouncement）
     pending<AnnouncementItem | null>("项目公告功能尚未接入"),
-    // E 待接入：最近活动（E-A02 listProjectActivities）
-    pending<PageResult<ActivityItem>>("团队动态功能尚未接入"),
+    // E 已交付：最近活动（E-A02 listProjectActivities）。空结果是空列表，不是降级。
+    queryPart("项目动态", () => listProjectActivities(actorId, projectId, { limit: 10 })),
   ]);
 
   return {

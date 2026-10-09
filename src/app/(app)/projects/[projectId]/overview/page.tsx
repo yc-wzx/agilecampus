@@ -2,11 +2,14 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { z } from "zod";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { ActivityFeed } from "@/components/activity/activity-feed";
+import { MyProjectTodos } from "@/components/activity/my-project-todos";
 import { ProjectNav } from "@/components/projects/project-nav";
 import { DeliverableProgress, TaskProgress } from "@/components/projects/progress";
 import { QueryUnavailable } from "@/components/projects/query-state";
 import { SetupGuide } from "@/components/projects/setup-guide";
 import { auth } from "@/lib/auth";
+import { getMyOpenTasks, todayInShanghai } from "@/lib/dashboard";
 import { ForbiddenError } from "@/lib/errors";
 import { deriveSetupSteps } from "@/lib/project-setup-steps";
 import { listTeamMembers } from "@/lib/team";
@@ -29,6 +32,29 @@ async function loadOverview(
   }
 }
 
+/**
+ * E：本项目的「我的待办」。复用工作台的 getMyOpenTasks 后在视图层过滤，
+ * 与页面上其它卡片同一口径——这一项取不到就只降级这一张卡，不整页 500。
+ */
+async function loadMyProjectTodos(actorId: string, projectId: string) {
+  try {
+    const tasks = await getMyOpenTasks(actorId);
+    return {
+      state: "ready" as const,
+      data: tasks.filter((task) => task.projectId === projectId),
+    };
+  } catch (error) {
+    console.error(
+      "[overview] 我的待办查询失败",
+      error instanceof Error ? error.name : "UnknownError",
+    );
+    return {
+      state: "unavailable" as const,
+      message: "我的待办暂时不可用，页面其余部分不受影响；请稍后重试。",
+    };
+  }
+}
+
 export default async function ProjectOverviewPage({
   params,
 }: {
@@ -46,10 +72,15 @@ export default async function ProjectOverviewPage({
     taskStats,
     deliverableStats,
     activeIteration,
+    recentActivities,
   } = summary;
 
   // 空项目引导：纯函数按真实数据推导；取不到的项保持“未完成”，不假装已完成
   const teamMembers = await listTeamMembers(project.teamId);
+  // E：动态里要显示“谁做的”。ActivityItem 只带 actorId（定稿 §9.4 的形状），
+  // 姓名用上面已经取到的成员表补，不额外查一次库。
+  const actorNames = Object.fromEntries(teamMembers.map((m) => [m.id, m.name]));
+  const myTodos = await loadMyProjectTodos(session.user.id, projectId);
   const setupSteps = deriveSetupSteps({
     projectId,
     teamId: project.teamId,
@@ -110,6 +141,28 @@ export default async function ProjectOverviewPage({
           <TaskProgress stats={taskStats.data} />
         ) : (
           <QueryUnavailable title="任务进展" message={taskStats.message} />
+        )}
+      </section>
+
+      {/* 公告栏：本人待办 + 项目动态（E）。两块各自独立降级，互不影响 */}
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 md:items-start">
+        {myTodos.state === "ready" ? (
+          <MyProjectTodos items={myTodos.data} today={todayInShanghai()} />
+        ) : (
+          <QueryUnavailable title="我的待办" message={myTodos.message} />
+        )}
+
+        {recentActivities.state === "ready" ? (
+          <ActivityFeed
+            items={recentActivities.data.items}
+            coverage={recentActivities.data.coverage}
+            actorNames={actorNames}
+          />
+        ) : (
+          <QueryUnavailable
+            title="项目动态"
+            message={recentActivities.message}
+          />
         )}
       </section>
 
