@@ -425,7 +425,7 @@ describe("课表驱动短期草案与确认", () => {
       (await getPlanningWorkspace(s.student.id, s.project.id)).plans[0].isStale,
     ).toBe(true);
   });
-  it("已有个人安排跨项目避让，同项目重规划先取消", async () => {
+  it("已有个人安排跨项目避让，同项目重规划需要指定原计划", async () => {
     const s = await scene(),
       first = await generatePersonalPlan(s.student.id, s.project.id, s.input, {
         now,
@@ -442,7 +442,7 @@ describe("课表驱动短期草案与确认", () => {
         { ...s.input, requestId: randomUUID() },
         { now },
       ),
-    ).rejects.toThrow("取消旧计划");
+    ).rejects.toThrow("重新规划");
     const second = await createProject(s.admin.id, s.team.id, {
         name: "另一个项目",
       }),

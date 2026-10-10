@@ -26,6 +26,7 @@ export const eventSchema = z
     title: z.string().trim().min(1).max(100),
     startAt: z.iso.datetime({ offset: true }),
     endAt: z.iso.datetime({ offset: true }),
+    shareBusy: z.boolean().default(false),
   })
   .refine(
     (v) =>
@@ -34,7 +35,7 @@ export const eventSchema = z
         7 * 86400000,
     "日程结束必须晚于开始，单次最长 7 天",
   );
-export type ScheduleEventInput = z.infer<typeof eventSchema>;
+export type ScheduleEventInput = z.input<typeof eventSchema>;
 export type BusyPeriod = { startAt: string; endAt: string };
 export type PlanTask = {
   id: string;
@@ -69,6 +70,7 @@ export const generatePlanSchema = z.strictObject({
   startDate: z.iso.date(),
   days: z.union([z.literal(7), z.literal(14)]),
   mode: z.enum(["ai", "rules"]),
+  replacePlanId: z.uuid().optional(),
   goal: z.string().trim().max(1000).default(""),
   selections: z
     .array(

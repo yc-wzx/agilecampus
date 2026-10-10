@@ -30,8 +30,9 @@ export const manualSchema = z.strictObject({
   end: z.string(),
   repeatWeeks: z.number().int().min(1).max(26).default(1),
   intervalWeeks: z.union([z.literal(1), z.literal(2)]).default(1),
+  shareBusy: z.boolean().default(false),
 });
-export type ManualScheduleInput = z.infer<typeof manualSchema>;
+export type ManualScheduleInput = z.input<typeof manualSchema>;
 export function manualOccurrences(input: ManualScheduleInput) {
   const value = manualSchema.parse(input),
     start = Date.parse(isoLocal(value.start)),
@@ -41,6 +42,7 @@ export function manualOccurrences(input: ManualScheduleInput) {
   return Array.from({ length: value.repeatWeeks }, (_, n) =>
     eventSchema.parse({
       title: value.title,
+      shareBusy: value.shareBusy,
       startAt: new Date(
         start + n * value.intervalWeeks * 7 * 86400000,
       ).toISOString(),

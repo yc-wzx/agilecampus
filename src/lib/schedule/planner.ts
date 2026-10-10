@@ -70,9 +70,17 @@ async function context(
   tx: DbTx,
   actorId: string,
   projectId: string,
-  input: Pick<GeneratePlanInput, "startDate" | "days" | "selections">,
+  input: Pick<
+    GeneratePlanInput,
+    "startDate" | "days" | "selections" | "replacePlanId"
+  >,
   excludePlanId?: string,
 ) {
+  const replacement = input.replacePlanId
+    ? await ownPlan(tx, actorId, projectId, input.replacePlanId)
+    : null;
+  if (replacement && replacement.status !== "confirmed")
+    throw new ConflictError("原计划已取消或被替换，请刷新后重新规划");
   const [access, all, stages, rounds, deps, state, busy, plans] =
     await Promise.all([
       planningAccess(tx, actorId, projectId),
@@ -128,6 +136,7 @@ async function context(
             ),
             gte(personalWorkPlans.endDate, addDays(input.startDate, -1)),
             excludePlanId ? ne(personalWorkPlans.id, excludePlanId) : undefined,
+            replacement ? ne(personalWorkPlans.id, replacement.id) : undefined,
           ),
         )
         .orderBy(personalWorkPlans.id)
@@ -171,6 +180,15 @@ async function context(
     preferences,
     busy,
     otherBlocks,
+    ...(replacement
+      ? {
+          replacement: {
+            id: replacement.id,
+            revision: replacement.revision,
+            status: replacement.status,
+          },
+        }
+      : {}),
   });
   const stats = {
     total: all.filter((t) => !t.parentTaskId).length,
@@ -228,6 +246,7 @@ function view(row: typeof personalWorkPlans.$inferSelect, stale = false) {
         ? "expired"
         : row.status,
     revision: row.revision,
+    replacesPlanId: row.replacesPlanId,
     goal: row.goal,
     mode: row.mode,
     startDate: row.startDate,
@@ -395,7 +414,7 @@ export async function generatePersonalPlan(
       )
     )
       throw new ConflictError(
-        "当前项目已有重叠的已确认计划，请先取消旧计划再重新规划",
+        "当前项目已有重叠的已确认计划，请从该计划选择重新规划",
       );
     await finishPersonalRequest(tx, request.id, {
       token,
@@ -566,6 +585,7 @@ export async function generatePersonalPlan(
           goal,
           mode: data.mode,
           snapshotHash: ctx.hash,
+          replacesPlanId: data.replacePlanId ?? null,
           scheduleRevision: ctx.scheduleRevision,
           input: data,
           items: allocated.items,
@@ -620,6 +640,8 @@ export async function changePersonalPlan(
     if (claim.replay) return view(row);
     if (row.revision !== data.expectedRevision || row.status === "cancelled")
       throw new ConflictError("计划状态已变化，请刷新核对");
+    let confirmedInput = row.input as GeneratePlanInput;
+    let confirmedHash = row.snapshotHash;
     if (data.action === "confirm") {
       if (row.status !== "draft" || row.expiresAt.getTime() <= Date.now())
         throw new ConflictError("草案已过期或已确认，请重新生成");
@@ -641,6 +663,29 @@ export async function changePersonalPlan(
         );
       if (!(row.items as WorkBlock[]).length)
         throw new ValidationError("没有可安排的工作时段，请调整后重新生成");
+      if (confirmedInput.replacePlanId) {
+        const original = await ownPlan(
+          tx,
+          actorId,
+          projectId,
+          confirmedInput.replacePlanId,
+          true,
+        );
+        if (original.status !== "confirmed")
+          throw new ConflictError("原计划已经变化，请重新规划");
+        await tx
+          .update(personalWorkPlans)
+          .set({ status: "cancelled", revision: original.revision + 1 })
+          .where(eq(personalWorkPlans.id, original.id));
+        // Keep the replacement relationship in the row, but use the new active
+        // schedule for future freshness checks. The entire switch is atomic.
+        const cleanInput = { ...confirmedInput };
+        delete cleanInput.replacePlanId;
+        confirmedInput = cleanInput;
+        confirmedHash = (
+          await context(tx, actorId, projectId, cleanInput, row.id)
+        ).hash;
+      }
     }
     const [updated] = await tx
       .update(personalWorkPlans)
@@ -648,10 +693,31 @@ export async function changePersonalPlan(
         status: data.action === "confirm" ? "confirmed" : "cancelled",
         revision: row.revision + 1,
         confirmedAt: data.action === "confirm" ? new Date() : row.confirmedAt,
+        input: confirmedInput,
+        snapshotHash: confirmedHash,
       })
       .where(eq(personalWorkPlans.id, id))
       .returning();
     await finishPersonalRequest(tx, claim.id, { id });
     return view(updated);
+  });
+}
+
+export async function getReplanningSeed(
+  actorId: string,
+  projectId: string,
+  id: string,
+) {
+  return readProject(actorId, projectId, async (tx) => {
+    const row = await ownPlan(tx, actorId, projectId, id);
+    if (row.status !== "confirmed")
+      throw new ConflictError("只能重新规划已确认的个人计划");
+    const input = row.input as GeneratePlanInput;
+    return {
+      id: row.id,
+      goal: row.goal,
+      mode: row.mode as "ai" | "rules",
+      selections: input.selections,
+    };
   });
 }

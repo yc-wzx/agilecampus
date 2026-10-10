@@ -84,6 +84,12 @@ function fingerprint(event: ScheduleEventInput) {
     endAt: new Date(event.endAt).toISOString(),
   });
 }
+function requestEvent(event: ScheduleEventInput) {
+  // Preserve pre-0014 idempotency hashes for private events. Opting into sharing
+  // is new content; the absent/default false field is the original contract.
+  const { shareBusy, ...details } = event;
+  return shareBusy ? { ...details, shareBusy: true } : details;
+}
 export async function getMySchedule(
   actorId: string,
   input: { startDate?: string; endDate?: string; offset?: number } = {},
@@ -128,15 +134,16 @@ export async function getMySchedule(
   ]);
   return {
     revision: states[0]?.revision ?? 0,
+    sharingRevision: states[0]?.sharingRevision ?? 0,
+    sharedTeamIds: states[0]?.sharedTeamIds ?? [],
+    shareWorkPlans: states[0]?.shareWorkPlans ?? false,
     preferences: preferencesSchema.parse(states[0]?.preferences ?? {}),
-    items: rows
-      .slice(0, 50)
-      .map((row) => ({
-        ...row,
-        startAt: row.startAt.toISOString(),
-        endAt: row.endAt.toISOString(),
-        createdAt: row.createdAt.toISOString(),
-      })),
+    items: rows.slice(0, 50).map((row) => ({
+      ...row,
+      startAt: row.startAt.toISOString(),
+      endAt: row.endAt.toISOString(),
+      createdAt: row.createdAt.toISOString(),
+    })),
     nextOffset: rows.length > 50 ? query.offset + 50 : null,
   };
 }
@@ -177,14 +184,14 @@ export async function importMySchedule(
   input: {
     requestId: string;
     events: ScheduleEventInput[];
-    source: "ics" | "csv" | "manual";
+    source: "ics" | "csv" | "manual" | "emergency";
   },
 ) {
   const data = z
     .strictObject({
       requestId: z.uuid(),
       events: z.array(eventSchema).min(1).max(1000),
-      source: z.enum(["ics", "csv", "manual"]),
+      source: z.enum(["ics", "csv", "manual", "emergency"]),
     })
     .parse(input);
   return db.transaction(async (tx) => {
@@ -194,7 +201,7 @@ export async function importMySchedule(
         actorId,
         "events.import",
         data.requestId,
-        data,
+        { ...data, events: data.events.map(requestEvent) },
       );
     if (claim.replay)
       return claim.result as {
@@ -213,6 +220,7 @@ export async function importMySchedule(
       endAt: new Date(event.endAt),
       fingerprint: key,
       source: data.source,
+      shareBusy: event.shareBusy,
     }));
     const inserted = await tx
       .insert(personalScheduleEvents)
@@ -260,7 +268,11 @@ export async function changeMyEvent(
         actorId,
         data.event ? "event.update" : "event.delete",
         data.requestId,
-        { id, ...data },
+        {
+          id,
+          ...data,
+          event: data.event ? requestEvent(data.event) : undefined,
+        },
       );
     if (claim.replay) return claim.result as { id: string };
     const [row] = await tx
@@ -296,6 +308,7 @@ export async function changeMyEvent(
           startAt: new Date(data.event.startAt),
           endAt: new Date(data.event.endAt),
           fingerprint: key,
+          shareBusy: data.event.shareBusy,
           revision: row.revision + 1,
         })
         .where(eq(personalScheduleEvents.id, id));
@@ -303,10 +316,11 @@ export async function changeMyEvent(
       await tx
         .delete(personalScheduleEvents)
         .where(eq(personalScheduleEvents.id, id));
-    await tx
-      .update(personalScheduleState)
-      .set({ revision: state.revision + 1 })
-      .where(eq(personalScheduleState.userId, actorId));
+    if (!data.event || fingerprint(data.event) !== row.fingerprint)
+      await tx
+        .update(personalScheduleState)
+        .set({ revision: state.revision + 1 })
+        .where(eq(personalScheduleState.userId, actorId));
     return finishPersonalRequest(tx, claim.id, { id });
   });
 }
