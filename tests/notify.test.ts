@@ -1,133 +1,189 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { createUser, bindFeishu } from "@/lib/user";
-import { createTeam } from "@/lib/team";
-import { createProject } from "@/lib/project";
-import { createTask } from "@/lib/task";
+import { and, eq, sql } from "drizzle-orm";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { tasks } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import {
+  externalNotificationDeliveries as deliveries,
+  tasks,
+  teamMembers,
+  users,
+} from "@/db/schema";
+import { createTeam, joinTeam } from "@/lib/team";
+import { createProject } from "@/lib/project";
+import { createTask, updateTask } from "@/lib/task";
+import { scanAndRecordDueReminders } from "@/lib/notification-reminders";
+import {
+  dispatchExternalNotifications,
+  getMyNotificationChannels,
+} from "@/lib/notification";
+import { NotificationDeliveryError } from "@/lib/notification-delivery-error";
+import { notifyTaskAssigned, scanAndNotifyDue } from "@/lib/notify";
 import { resetDb } from "./helpers";
-
-// mock 飞书斥候：只验是否被调、收件人与卡片内容
-const sendMock = vi.fn().mockResolvedValue(undefined);
-vi.mock("@/lib/feishu", () => ({ sendCardMessage: (...a: unknown[]) => sendMock(...a) }));
-
-async function base() {
-  const owner = await createUser({ email: "owner@e.com", password: "password123", name: "主帅" });
-  const team = await createTeam(owner.id, "东吴");
-  const project = await createProject(owner.id, team.id, { name: "赤壁" });
-  return { owner, team, project };
+const send = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/feishu", () => ({ sendCardMessage: send }));
+async function scene() {
+  const [owner, member] = await db
+    .insert(users)
+    .values(
+      ["owner", "member"].map((name) => ({
+        name,
+        email: `${name}@notify.test`,
+        passwordHash: "fixture",
+      })),
+    )
+    .returning();
+  const team = await createTeam(owner.id, "通知");
+  await joinTeam(member.id, team.inviteCode);
+  const project = await createProject(owner.id, team.id, { name: "通知测试" });
+  return { owner, member, team, project };
 }
-
-describe("notifyTaskAssigned", () => {
-  beforeEach(async () => { await resetDb(); sendMock.mockClear(); });
-
-  it("负责人已绑飞书 → 发私信", async () => {
-    const { owner, project } = await base();
-    await bindFeishu(owner.id, { openId: "ou_owner", name: "主帅" });
-    const task = await createTask(owner.id, project.id, { title: "斥候", assigneeId: owner.id, dueDate: "2026-08-01" });
-
-    await new Promise((r) => setTimeout(r, 50)); // 让 createTask 的游离即时通知先跑完
-    sendMock.mockClear();                         // 清掉 createTask 副作用产生的调用
-
-    const { notifyTaskAssigned } = await import("@/lib/notify");
+const now = new Date("2026-10-09T10:00:00+08:00");
+describe("持久化通知与兼容适配器", () => {
+  beforeEach(async () => {
+    await resetDb();
+    send.mockReset().mockResolvedValue(undefined);
+    vi.stubEnv("FEISHU_APP_ID", "");
+    vi.stubEnv("FEISHU_APP_SECRET", "");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+  function configure() {
+    vi.stubEnv("FEISHU_APP_ID", "fixture");
+    vi.stubEnv("FEISHU_APP_SECRET", "fixture");
+  }
+  it("配置缺失不发送也不丢意图；绑定并配置后重放只发一次", async () => {
+    const s = await scene(),
+      task = await createTask(s.owner.id, s.project.id, {
+        title: "被指派",
+        assigneeId: s.member.id,
+      });
     await notifyTaskAssigned(task);
-
-    expect(sendMock).toHaveBeenCalledTimes(1);
-    expect(sendMock.mock.calls[0][0]).toBe("ou_owner");
-    expect(JSON.stringify(sendMock.mock.calls[0][1])).toContain("斥候"); // 卡片含任务标题
-  });
-
-  it("负责人未绑飞书 → 跳过", async () => {
-    const { owner, project } = await base();
-    const task = await createTask(owner.id, project.id, { title: "x", assigneeId: owner.id });
-    const { notifyTaskAssigned } = await import("@/lib/notify");
+    expect(send).not.toHaveBeenCalled();
+    expect((await getMyNotificationChannels(s.member.id)).externalStatus).toBe(
+      "unbound",
+    );
+    await db
+      .update(users)
+      .set({ feishuOpenId: "ou_member" })
+      .where(eq(users.id, s.member.id));
+    expect((await getMyNotificationChannels(s.member.id)).externalStatus).toBe(
+      "unconfigured",
+    );
+    configure();
     await notifyTaskAssigned(task);
-    expect(sendMock).not.toHaveBeenCalled();
-  });
-
-  it("无负责人 → 跳过", async () => {
-    const { owner, project } = await base();
-    const task = await createTask(owner.id, project.id, { title: "x" });
-    const { notifyTaskAssigned } = await import("@/lib/notify");
     await notifyTaskAssigned(task);
-    expect(sendMock).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect((await db.select().from(deliveries))[0].status).toBe("sent");
   });
-
-  it("飞书发送抛错 → 不抛出（fire-and-forget）", async () => {
-    const { owner, project } = await base();
-    await bindFeishu(owner.id, { openId: "ou_owner", name: "主帅" });
-    const task = await createTask(owner.id, project.id, { title: "x", assigneeId: owner.id });
-    sendMock.mockRejectedValueOnce(new Error("飞书挂了"));
-    const { notifyTaskAssigned } = await import("@/lib/notify");
-    await expect(notifyTaskAssigned(task)).resolves.toBeUndefined();
+  it("自指派、无负责人不发消息；其他成员完成才通知创建者", async () => {
+    const s = await scene();
+    configure();
+    await db
+      .update(users)
+      .set({ feishuOpenId: "ou_owner" })
+      .where(eq(users.id, s.owner.id));
+    const self = await createTask(s.owner.id, s.project.id, {
+      title: "自己的任务",
+      assigneeId: s.owner.id,
+    });
+    await notifyTaskAssigned(self);
+    expect(send).not.toHaveBeenCalled();
+    await updateTask(s.member.id, self.id, { status: "done" });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0]).toBe("ou_owner");
   });
-});
-
-describe("notifyTaskCompleted", () => {
-  beforeEach(async () => { await resetDb(); sendMock.mockClear(); });
-
-  it("创建者≠操作者且已绑 → 通知创建者", async () => {
-    const { owner, project } = await base();
-    await bindFeishu(owner.id, { openId: "ou_owner", name: "主帅" });
-    const doer = await createUser({ email: "doer@e.com", password: "password123", name: "小卒" });
-    const task = await createTask(owner.id, project.id, { title: "攻城" });
-
-    const { notifyTaskCompleted } = await import("@/lib/notify");
-    await notifyTaskCompleted(task, doer.id);
-
-    expect(sendMock).toHaveBeenCalledTimes(1);
-    expect(sendMock.mock.calls[0][0]).toBe("ou_owner");
+  it("到期按北京时间，未绑定也有站内通知，同一天不重复，改日期后重新提醒", async () => {
+    const s = await scene();
+    const task = await createTask(s.owner.id, s.project.id, {
+      title: "逾期",
+      assigneeId: s.owner.id,
+      dueDate: "2026-10-08",
+    });
+    const later = await createTask(s.owner.id, s.project.id, {
+      title: "远期",
+      assigneeId: s.owner.id,
+      dueDate: "2026-10-11",
+    });
+    const first = await scanAndRecordDueReminders(now);
+    expect(first.created).toBe(1);
+    expect((await scanAndRecordDueReminders(now)).created).toBe(0);
+    await db
+      .update(tasks)
+      .set({ dueDate: "2026-10-09" })
+      .where(eq(tasks.id, task.id));
+    expect((await scanAndRecordDueReminders(now)).created).toBe(1);
+    await db.update(tasks).set({ status: "done" }).where(eq(tasks.id, task.id));
+    expect((await scanAndRecordDueReminders(now)).scanned).toBe(0);
+    expect(later.id).toBeTruthy();
+    expect(send).not.toHaveBeenCalled();
   });
-
-  it("创建者=操作者 → 不发（免自我骚扰）", async () => {
-    const { owner, project } = await base();
-    await bindFeishu(owner.id, { openId: "ou_owner", name: "主帅" });
-    const task = await createTask(owner.id, project.id, { title: "攻城" });
-    const { notifyTaskCompleted } = await import("@/lib/notify");
-    await notifyTaskCompleted(task, owner.id);
-    expect(sendMock).not.toHaveBeenCalled();
+  it("明确拒绝会退避重试，网络未知不自动重发；并发 worker 不重复发送", async () => {
+    const s = await scene();
+    await createTask(s.owner.id, s.project.id, {
+      title: "重试",
+      assigneeId: s.member.id,
+    });
+    await db
+      .update(users)
+      .set({ feishuOpenId: "ou_member" })
+      .where(eq(users.id, s.member.id));
+    configure();
+    send.mockRejectedValueOnce(
+      new NotificationDeliveryError("rejected", "PROVIDER_429"),
+    );
+    expect((await dispatchExternalNotifications()).failed).toBe(1);
+    expect((await dispatchExternalNotifications()).sent).toBe(0);
+    await db.update(deliveries).set({ nextAttemptAt: new Date(0) });
+    await Promise.all([
+      dispatchExternalNotifications(),
+      dispatchExternalNotifications(),
+    ]);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect((await db.select().from(deliveries))[0].status).toBe("sent");
+    await createTask(s.owner.id, s.project.id, {
+      title: "不确定",
+      assigneeId: s.member.id,
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(3));
+    await db.update(deliveries).set({
+      status: "pending",
+      deliveredAt: null,
+      nextAttemptAt: new Date(0),
+    });
+    send.mockRejectedValue(
+      new NotificationDeliveryError("uncertain", "NETWORK_RESULT_UNKNOWN"),
+    );
+    await dispatchExternalNotifications();
+    const calls = send.mock.calls.length;
+    await dispatchExternalNotifications();
+    expect(send.mock.calls.length).toBe(calls);
+    expect((await getMyNotificationChannels(s.member.id)).externalStatus).toBe(
+      "failed",
+    );
   });
-});
-
-describe("scanAndNotifyDue", () => {
-  beforeEach(async () => { await resetDb(); sendMock.mockClear(); });
-
-  it("临期(明日)+逾期(昨日)按负责人聚合为一封", async () => {
-    const { owner, project } = await base();
-    await bindFeishu(owner.id, { openId: "ou_owner", name: "主帅" });
-    const today = new Date();
-    const iso = (d: Date) => d.toISOString().slice(0, 10);
-    const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
-    const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
-
-    await createTask(owner.id, project.id, { title: "临期活", assigneeId: owner.id, dueDate: iso(tomorrow) });
-    await createTask(owner.id, project.id, { title: "逾期活", assigneeId: owner.id, dueDate: iso(yesterday) });
-    // done 的逾期任务不计
-    const doneTask = await createTask(owner.id, project.id, { title: "已完成", assigneeId: owner.id, dueDate: iso(yesterday) });
-    await db.update(tasks).set({ status: "done" }).where(eq(tasks.id, doneTask.id));
-
-    await new Promise((r) => setTimeout(r, 50)); // 让 createTask 的游离即时通知先跑完
-    sendMock.mockClear();                         // 清掉 createTask 副作用产生的调用
-
-    const { scanAndNotifyDue } = await import("@/lib/notify");
-    const r = await scanAndNotifyDue();
-
-    expect(sendMock).toHaveBeenCalledTimes(1); // 同一负责人一封
-    const card = JSON.stringify(sendMock.mock.calls[0][1]);
-    expect(card).toContain("临期活");
-    expect(card).toContain("逾期活");
-    expect(card).not.toContain("已完成");
-    expect(r.notified).toBe(1);
-  });
-
-  it("未绑飞书的负责人 → 不发", async () => {
-    const { owner, project } = await base();
-    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
-    await createTask(owner.id, project.id, { title: "x", assigneeId: owner.id, dueDate: tomorrow.toISOString().slice(0, 10) });
-    const { scanAndNotifyDue } = await import("@/lib/notify");
-    const r = await scanAndNotifyDue();
-    expect(sendMock).not.toHaveBeenCalled();
-    expect(r.notified).toBe(0);
+  it("退组后待发通知跳过；兼容扫描函数不绕过权限与配置", async () => {
+    const s = await scene();
+    await createTask(s.owner.id, s.project.id, {
+      title: "离组",
+      assigneeId: s.member.id,
+    });
+    await db
+      .update(users)
+      .set({ feishuOpenId: "ou_member" })
+      .where(eq(users.id, s.member.id));
+    await db
+      .delete(teamMembers)
+      .where(
+        and(
+          eq(teamMembers.teamId, s.team.id),
+          eq(teamMembers.userId, s.member.id),
+        ),
+      );
+    configure();
+    expect((await dispatchExternalNotifications()).skipped).toBe(1);
+    expect(send).not.toHaveBeenCalled();
+    expect((await db.select().from(deliveries))[0].status).toBe("skipped");
+    expect((await scanAndNotifyDue()).notified).toBe(0);
+    expect(
+      await db.execute(sql`select count(*) from notifications`),
+    ).toBeTruthy();
   });
 });

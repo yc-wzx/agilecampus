@@ -15,7 +15,11 @@ import { createUser } from "@/lib/user";
 import { resetDb } from "./helpers";
 
 async function makeUser(email: string) {
-  return createUser({ email, password: "password123", name: email.split("@")[0] });
+  return createUser({
+    email,
+    password: "password123",
+    name: email.split("@")[0],
+  });
 }
 
 async function scene() {
@@ -86,7 +90,10 @@ describe("recordProjectActivity / listProjectActivities (E-A01 / E-A02)", () => 
     const same = "2026-10-09T02:00:00.000Z";
     const a = await record(project.id, owner.id, { occurredAt: same });
     const b = await record(project.id, owner.id, { occurredAt: same });
-    const tied = await listProjectActivities(owner.id, project.id, { fromDate: "2026-10-09", toDate: "2026-10-10" });
+    const tied = await listProjectActivities(owner.id, project.id, {
+      fromDate: "2026-10-09",
+      toDate: "2026-10-10",
+    });
     expect(tied.items.map((i) => i.id)).toEqual([a.id, b.id].sort());
   });
 
@@ -94,7 +101,9 @@ describe("recordProjectActivity / listProjectActivities (E-A01 / E-A02)", () => 
     const { owner, project } = await scene();
     for (let i = 0; i < 3; i++) await record(project.id, owner.id);
 
-    const first = await listProjectActivities(owner.id, project.id, { limit: 2 });
+    const first = await listProjectActivities(owner.id, project.id, {
+      limit: 2,
+    });
     expect(first.items).toHaveLength(2);
     expect(first.total).toBe(3);
     expect(first.nextOffset).toBe(2);
@@ -110,21 +119,33 @@ describe("recordProjectActivity / listProjectActivities (E-A01 / E-A02)", () => 
   it("筛选按对象类型 / 对象 / 操作人各管各的", async () => {
     const { owner, student, project } = await scene();
     const taskId = randomUUID();
-    await record(project.id, owner.id, { objectType: "task", objectId: taskId });
-    await record(project.id, student.id, { objectType: "iteration", objectId: randomUUID() });
+    await record(project.id, owner.id, {
+      objectType: "task",
+      objectId: taskId,
+    });
+    await record(project.id, student.id, {
+      objectType: "iteration",
+      objectId: randomUUID(),
+    });
     await record(project.id, owner.id, {
       objectType: "deliverable",
       objectId: randomUUID(),
       type: "deliverable.submitted",
     });
 
-    const onlyTask = await listProjectActivities(owner.id, project.id, { objectType: "task" });
+    const onlyTask = await listProjectActivities(owner.id, project.id, {
+      objectType: "task",
+    });
     expect(onlyTask.items.map((i) => i.objectType)).toEqual(["task"]);
 
-    const byObject = await listProjectActivities(owner.id, project.id, { objectId: taskId });
+    const byObject = await listProjectActivities(owner.id, project.id, {
+      objectId: taskId,
+    });
     expect(byObject.total).toBe(1);
 
-    const byActor = await listProjectActivities(owner.id, project.id, { actorId: student.id });
+    const byActor = await listProjectActivities(owner.id, project.id, {
+      actorId: student.id,
+    });
     expect(byActor.items.map((i) => i.actorId)).toEqual([student.id]);
   });
 
@@ -172,13 +193,19 @@ describe("recordProjectActivity / listProjectActivities (E-A01 / E-A02)", () => 
     const { owner, project } = await scene();
 
     await expect(
-      record(project.id, owner.id, { metadata: { comment: "这是一段评论正文" } }),
+      record(project.id, owner.id, {
+        metadata: { comment: "这是一段评论正文" },
+      }),
     ).rejects.toBeInstanceOf(ValidationError);
     await expect(
-      record(project.id, owner.id, { metadata: { blockedReason: "等第三方接口" } }),
+      record(project.id, owner.id, {
+        metadata: { blockedReason: "等第三方接口" },
+      }),
     ).rejects.toBeInstanceOf(ValidationError);
     await expect(
-      record(project.id, owner.id, { metadata: { description: "任务描述全文" } }),
+      record(project.id, owner.id, {
+        metadata: { description: "任务描述全文" },
+      }),
     ).rejects.toThrow("含未允许字段");
 
     // 登记过的键照写不误
@@ -188,13 +215,16 @@ describe("recordProjectActivity / listProjectActivities (E-A01 / E-A02)", () => 
     expect(ok.id).toBeTruthy();
   });
 
-  it("还没登记 metadata 白名单的类型不许携带额外信息", async () => {
+  it("评论已登记后仍不许携带白名单外的正文或额外信息", async () => {
     const { owner, project } = await scene();
     // comment.* 属 E-C01（P1），事件目录里有、白名单里还没有：
     // 现在就想带 metadata 的调用方必须先来登记，而不是由着它顺手塞
     await expect(
-      record(project.id, owner.id, { type: "comment.created", metadata: { extra: "x" } }),
-    ).rejects.toThrow("尚未登记 metadata 白名单");
+      record(project.id, owner.id, {
+        type: "comment.created",
+        metadata: { extra: "x" },
+      }),
+    ).rejects.toThrow("含未允许字段");
   });
 
   it("事件目录外的类型与空摘要都被拒——不悄悄放宽白名单", async () => {
@@ -211,12 +241,12 @@ describe("recordProjectActivity / listProjectActivities (E-A01 / E-A02)", () => 
     const { owner, outsider, project } = await scene();
     await record(project.id, owner.id);
 
-    await expect(listProjectActivities(outsider.id, project.id)).rejects.toBeInstanceOf(
-      NotFoundError,
-    );
-    await expect(listProjectActivities(outsider.id, project.id)).rejects.toThrow(
-      "项目不存在或无权访问",
-    );
+    await expect(
+      listProjectActivities(outsider.id, project.id),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(
+      listProjectActivities(outsider.id, project.id),
+    ).rejects.toThrow("项目不存在或无权访问");
   });
 
   it("没有活动时是空列表，不是错误、也不是伪造的 0 条", async () => {
@@ -234,8 +264,12 @@ describe("recordProjectActivity / listProjectActivities (E-A01 / E-A02)", () => 
 
   it("覆盖说明用真实最早一条的时间，不拿「上线日期」冒充", async () => {
     const { owner, project } = await scene();
-    await record(project.id, owner.id, { occurredAt: "2026-10-06T09:00:00.000Z" });
-    await record(project.id, owner.id, { occurredAt: "2026-10-06T02:00:00.000Z" });
+    await record(project.id, owner.id, {
+      occurredAt: "2026-10-06T09:00:00.000Z",
+    });
+    await record(project.id, owner.id, {
+      occurredAt: "2026-10-06T02:00:00.000Z",
+    });
 
     const page = await listProjectActivities(owner.id, project.id);
     expect(page.coverage.availableFrom).toBe("2026-10-06T02:00:00.000Z");
@@ -270,7 +304,9 @@ describe("getActivityEvidence (E-A03)", () => {
     const item = await record(project.id, owner.id);
     const other = await createProject(owner.id, team.id, { name: "第二战场" });
 
-    expect((await getActivityEvidence(owner.id, project.id, item.id)).id).toBe(item.id);
+    expect((await getActivityEvidence(owner.id, project.id, item.id)).id).toBe(
+      item.id,
+    );
 
     await expect(
       getActivityEvidence(owner.id, project.id, randomUUID()),
@@ -302,9 +338,13 @@ describe("computeActivityCoverageFromMin", () => {
   it("窗口起点不早于可用起点才算完整", () => {
     const min = "2026-10-06T02:00:00.000Z";
     // 10-06 的零点（10-05T16:00Z）早于最早记录 → 缺失前段
-    expect(computeActivityCoverageFromMin(min, "2026-10-06").complete).toBe(false);
+    expect(computeActivityCoverageFromMin(min, "2026-10-06").complete).toBe(
+      false,
+    );
     // 10-07 的零点（10-06T16:00Z）晚于最早记录 → 窗口内是完整的
-    expect(computeActivityCoverageFromMin(min, "2026-10-07").complete).toBe(true);
+    expect(computeActivityCoverageFromMin(min, "2026-10-07").complete).toBe(
+      true,
+    );
     expect(computeActivityCoverageFromMin(min).availableFrom).toBe(min);
   });
 });

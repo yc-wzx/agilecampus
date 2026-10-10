@@ -71,6 +71,20 @@
       "when": 1791552193420,
       "tag": "0009_f_notifications_p0",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791556029687,
+      "tag": "0010_comments_announcements",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791558667232,
+      "tag": "0011_scoped_ai_notification_delivery",
+      "breakpoints": true
     }
   ]
 }

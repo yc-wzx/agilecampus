@@ -1,6 +1,5 @@
-# 生产全栈——app + db 同网络，一键成军。
-# 用法：cp .env.example .env（填齐密钥）→ docker compose -f docker-compose.prod.yml up -d --build
-# 密码经 .env 变量插值（POSTGRES_PASSWORD），单一来源、不落 compose 明文。
+# 生产部署：复制 deploy/production.env.example 为 .env，填写配置。
+# 先 npm ci，再 node scripts/ops.mjs preflight / release；完整步骤见部署文档。
 
 services:
   db:
@@ -9,40 +8,42 @@ services:
     environment:
       POSTGRES_USER: agilecampus
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?须在 .env 设 POSTGRES_PASSWORD}
-      POSTGRES_DB: agilecampus
+      POSTGRES_DB: ${POSTGRES_DB:-agilecampus}
     volumes:
       - pgdata:/var/lib/postgresql/data
     # 不向宿主暴露 5432：仅容器内网访问（生产收敛攻击面）
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agilecampus -d agilecampus"]
+      test: ["CMD-SHELL", "pg_isready -U agilecampus -d ${POSTGRES_DB:-agilecampus}"]
       interval: 5s
       timeout: 3s
       retries: 10
 
   # 一次性建表：用 builder 阶段镜像（含 drizzle-kit，runner 精简版无），
-  # 待 db 健康后跑 db:push，成功退出后 app 方起。
+  # 待 db 健康后执行版本化迁移，成功退出后 app 方起。
   migrate:
+    image: ${MIGRATE_IMAGE:-agilecampus:migrate}
     build:
       context: .
       target: builder
     env_file: .env
     environment:
       # 覆盖 .env 的 localhost：容器内经服务名 db 连粮草
-      DATABASE_URL: postgres://agilecampus:${POSTGRES_PASSWORD}@db:5432/agilecampus
+      DATABASE_URL: postgres://agilecampus:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-agilecampus}
     depends_on:
       db:
         condition: service_healthy
-    command: ["npm", "run", "db:push"]
+    command: ["npm", "run", "db:migrate"]
     restart: "no"
 
   app:
+    image: ${APP_IMAGE:-agilecampus:local}
     build:
       context: .
       target: runner
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgres://agilecampus:${POSTGRES_PASSWORD}@db:5432/agilecampus
+      DATABASE_URL: postgres://agilecampus:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-agilecampus}
       # Auth.js v5 self-host 须信任反代/非 localhost 的 Host 头，否则登录报 UntrustedHost
       AUTH_TRUST_HOST: "true"
     depends_on:
@@ -52,7 +53,40 @@ services:
         condition: service_completed_successfully
     ports:
       # 宿主 3000 常被占用；默认避让至 3080，可经 .env 的 APP_PORT 覆盖
-      - "${APP_PORT:-3080}:3000"
+      - "127.0.0.1:${APP_PORT:-3080}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  reminders:
+    image: ${APP_IMAGE:-agilecampus:local}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      CRON_TARGET: http://app:3000/api/cron/reminders
+    command: ["node", "/app/cron-runner.mjs"]
+    depends_on:
+      app:
+        condition: service_healthy
+
+  edge:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
 
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

@@ -17,7 +17,11 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
-export const teamRoleEnum = pgEnum("team_role", ["admin", "teacher", "student"]);
+export const teamRoleEnum = pgEnum("team_role", [
+  "admin",
+  "teacher",
+  "student",
+]);
 export type TeamRole = (typeof teamRoleEnum.enumValues)[number];
 
 export const users = pgTable("users", {
@@ -55,12 +59,23 @@ export const teamMembers = pgTable(
   (t) => [uniqueIndex("team_members_team_user_unique").on(t.teamId, t.userId)],
 );
 
-export const projectStatusEnum = pgEnum("project_status", ["active", "archived"]);
+export const projectStatusEnum = pgEnum("project_status", [
+  "active",
+  "archived",
+]);
 export const milestoneStatusEnum = pgEnum("milestone_status", ["open", "done"]);
 export const taskStatusEnum = pgEnum("task_status", ["todo", "doing", "done"]);
-export const taskPriorityEnum = pgEnum("task_priority", ["low", "medium", "high"]);
+export const taskPriorityEnum = pgEnum("task_priority", [
+  "low",
+  "medium",
+  "high",
+]);
 // C / P0：迭代状态。开始 planned→active，结束 active→completed。
-export const iterationStatusEnum = pgEnum("iteration_status", ["planned", "active", "completed"]);
+export const iterationStatusEnum = pgEnum("iteration_status", [
+  "planned",
+  "active",
+  "completed",
+]);
 export type ProjectStatus = (typeof projectStatusEnum.enumValues)[number];
 export type TaskStatus = (typeof taskStatusEnum.enumValues)[number];
 export type TaskPriority = (typeof taskPriorityEnum.enumValues)[number];
@@ -114,8 +129,12 @@ export const iterations = pgTable(
     status: iterationStatusEnum("status").notNull().default("planned"),
     // 乐观锁版本号：每次修改自增，调用方须回传 expectedRevision。
     revision: integer("revision").notNull().default(1),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
@@ -141,12 +160,17 @@ export const tasks = pgTable(
     }),
     // C / P0：迭代归属。内部列名 sprint_id，对外 DTO 字段为 iterationId（仅此一份归属）。
     // 迭代删除后置空 = 任务退回任务池，不连带删任务。
-    sprintId: uuid("sprint_id").references(() => iterations.id, { onDelete: "set null" }),
+    sprintId: uuid("sprint_id").references(() => iterations.id, {
+      onDelete: "set null",
+    }),
     // 子任务层级：自引用，空＝顶层任务。父任务删则子任务随之（cascade）。
     // 自引用外键须显式标注 AnyPgColumn，否则 TS 推断成环。
-    parentTaskId: uuid("parent_task_id").references((): AnyPgColumn => tasks.id, {
-      onDelete: "cascade",
-    }),
+    parentTaskId: uuid("parent_task_id").references(
+      (): AnyPgColumn => tasks.id,
+      {
+        onDelete: "cascade",
+      },
+    ),
     title: text("title").notNull(),
     description: text("description"),
     // C / P0：验收标准。可选文本，旧任务为空；长度上限在服务层校验（10000 字）。
@@ -182,7 +206,11 @@ export const tasks = pgTable(
   ],
 );
 
-export const messageRoleEnum = pgEnum("message_role", ["user", "assistant", "tool"]);
+export const messageRoleEnum = pgEnum("message_role", [
+  "user",
+  "assistant",
+  "tool",
+]);
 export type MessageRole = (typeof messageRoleEnum.enumValues)[number];
 
 export const conversations = pgTable(
@@ -196,6 +224,7 @@ export const conversations = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     title: text("title"),
+    scope: text("scope").notNull().default("project"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [index("conversations_project_idx").on(t.projectId)],
@@ -205,6 +234,7 @@ export const messages = pgTable(
   "messages",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    seq: bigserial("seq", { mode: "number" }).notNull(),
     conversationId: uuid("conversation_id")
       .notNull()
       .references(() => conversations.id, { onDelete: "cascade" }),
@@ -324,103 +354,193 @@ export const taskLabels = pgTable(
 
 // D / P0: additive tables only. Submitted content is retained in immutable snapshots.
 export const deliverableTypeEnum = pgEnum("deliverable_type", [
-  "report", "presentation", "video", "survey", "code", "prototype", "demo", "other",
+  "report",
+  "presentation",
+  "video",
+  "survey",
+  "code",
+  "prototype",
+  "demo",
+  "other",
 ]);
-export const deliverableStatusEnum = pgEnum("deliverable_status", ["draft", "submitted", "approved", "changes_requested"]);
+export const deliverableStatusEnum = pgEnum("deliverable_status", [
+  "draft",
+  "submitted",
+  "approved",
+  "changes_requested",
+]);
 export type DeliverableType = (typeof deliverableTypeEnum.enumValues)[number];
 
-export const deliverables = pgTable("deliverables", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-  authorId: uuid("author_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  milestoneId: uuid("milestone_id").references(() => milestones.id, { onDelete: "set null" }),
-  title: text("title").notNull(),
-  type: deliverableTypeEnum("type").notNull(),
-  url: text("url").notNull().default(""),
-  description: text("description").notNull().default(""),
-  status: deliverableStatusEnum("status").notNull().default("draft"),
-  revision: integer("revision").notNull().default(1),
-  creationKey: uuid("creation_key").notNull(),
-  creationHash: text("creation_hash").notNull(),
-  // Private copy; public fields remain the latest submitted snapshot.
-  workingCopy: jsonb("working_copy").$type<{
-    title: string; type: DeliverableType; url: string; description: string;
-    milestoneId: string | null; requestId: string; baseRevision: number;
-  }>(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  submittedAt: timestamp("submitted_at", { withTimezone: true }),
-}, (t) => [
-  index("deliverables_project_idx").on(t.projectId),
-  index("deliverables_author_idx").on(t.authorId),
-  uniqueIndex("deliverables_creation_unique").on(t.projectId, t.authorId, t.creationKey),
-]);
+export const deliverables = pgTable(
+  "deliverables",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    milestoneId: uuid("milestone_id").references(() => milestones.id, {
+      onDelete: "set null",
+    }),
+    title: text("title").notNull(),
+    type: deliverableTypeEnum("type").notNull(),
+    url: text("url").notNull().default(""),
+    description: text("description").notNull().default(""),
+    status: deliverableStatusEnum("status").notNull().default("draft"),
+    revision: integer("revision").notNull().default(1),
+    creationKey: uuid("creation_key").notNull(),
+    creationHash: text("creation_hash").notNull(),
+    // Private copy; public fields remain the latest submitted snapshot.
+    workingCopy: jsonb("working_copy").$type<{
+      title: string;
+      type: DeliverableType;
+      url: string;
+      description: string;
+      milestoneId: string | null;
+      requestId: string;
+      baseRevision: number;
+    }>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("deliverables_project_idx").on(t.projectId),
+    index("deliverables_author_idx").on(t.authorId),
+    uniqueIndex("deliverables_creation_unique").on(
+      t.projectId,
+      t.authorId,
+      t.creationKey,
+    ),
+  ],
+);
 
-export const deliverableVersions = pgTable("deliverable_versions", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  deliverableId: uuid("deliverable_id").notNull().references(() => deliverables.id, { onDelete: "cascade" }),
-  versionNumber: integer("version_number").notNull(),
-  draftRevision: integer("draft_revision").notNull(),
-  submissionKey: uuid("submission_key").notNull(),
-  // Snapshot identifiers intentionally have no FK: deleting a milestone must not rewrite history.
-  authorId: uuid("author_id").notNull(),
-  submittedById: uuid("submitted_by_id").notNull(),
-  milestoneId: uuid("milestone_id"),
-  milestoneTitle: text("milestone_title"),
-  title: text("title").notNull(),
-  type: deliverableTypeEnum("type").notNull(),
-  url: text("url").notNull(),
-  description: text("description").notNull(),
-  submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [
-  uniqueIndex("deliverable_versions_number_unique").on(t.deliverableId, t.versionNumber),
-  uniqueIndex("deliverable_versions_submission_unique").on(t.deliverableId, t.submissionKey),
-]);
+export const deliverableVersions = pgTable(
+  "deliverable_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    deliverableId: uuid("deliverable_id")
+      .notNull()
+      .references(() => deliverables.id, { onDelete: "cascade" }),
+    versionNumber: integer("version_number").notNull(),
+    draftRevision: integer("draft_revision").notNull(),
+    submissionKey: uuid("submission_key").notNull(),
+    // Snapshot identifiers intentionally have no FK: deleting a milestone must not rewrite history.
+    authorId: uuid("author_id").notNull(),
+    submittedById: uuid("submitted_by_id").notNull(),
+    milestoneId: uuid("milestone_id"),
+    milestoneTitle: text("milestone_title"),
+    title: text("title").notNull(),
+    type: deliverableTypeEnum("type").notNull(),
+    url: text("url").notNull(),
+    description: text("description").notNull(),
+    submittedAt: timestamp("submitted_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("deliverable_versions_number_unique").on(
+      t.deliverableId,
+      t.versionNumber,
+    ),
+    uniqueIndex("deliverable_versions_submission_unique").on(
+      t.deliverableId,
+      t.submissionKey,
+    ),
+  ],
+);
 
-export const deliverableFeedbackDecision = pgEnum("deliverable_feedback_decision", ["approved", "changes_requested", "comment"]);
-export const deliverableFeedback = pgTable("deliverable_feedback", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-  deliverableId: uuid("deliverable_id").references(() => deliverables.id, { onDelete: "cascade" }),
-  versionId: uuid("version_id").references(() => deliverableVersions.id, { onDelete: "cascade" }),
-  milestoneId: uuid("milestone_id").references(() => milestones.id, { onDelete: "set null" }),
-  milestoneTitle: text("milestone_title"),
-  // Historical identity survives deletion of the live milestone (no FK by design).
-  milestoneSnapshotId: uuid("milestone_snapshot_id"),
-  reviewerId: uuid("reviewer_id").notNull(),
-  decision: deliverableFeedbackDecision("decision").notNull(),
-  comment: text("comment").notNull(),
-  requestId: uuid("request_id").notNull(),
-  requestHash: text("request_hash").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [
-  uniqueIndex("deliverable_feedback_version_unique").on(t.versionId),
-  uniqueIndex("deliverable_feedback_request_unique").on(t.projectId, t.reviewerId, t.requestId),
-  index("deliverable_feedback_project_idx").on(t.projectId),
-]);
+export const deliverableFeedbackDecision = pgEnum(
+  "deliverable_feedback_decision",
+  ["approved", "changes_requested", "comment"],
+);
+export const deliverableFeedback = pgTable(
+  "deliverable_feedback",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    deliverableId: uuid("deliverable_id").references(() => deliverables.id, {
+      onDelete: "cascade",
+    }),
+    versionId: uuid("version_id").references(() => deliverableVersions.id, {
+      onDelete: "cascade",
+    }),
+    milestoneId: uuid("milestone_id").references(() => milestones.id, {
+      onDelete: "set null",
+    }),
+    milestoneTitle: text("milestone_title"),
+    // Historical identity survives deletion of the live milestone (no FK by design).
+    milestoneSnapshotId: uuid("milestone_snapshot_id"),
+    reviewerId: uuid("reviewer_id").notNull(),
+    decision: deliverableFeedbackDecision("decision").notNull(),
+    comment: text("comment").notNull(),
+    requestId: uuid("request_id").notNull(),
+    requestHash: text("request_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("deliverable_feedback_version_unique").on(t.versionId),
+    uniqueIndex("deliverable_feedback_request_unique").on(
+      t.projectId,
+      t.reviewerId,
+      t.requestId,
+    ),
+    index("deliverable_feedback_project_idx").on(t.projectId),
+  ],
+);
 
-export const feedbackTaskLinks = pgTable("feedback_task_links", {
-  feedbackId: uuid("feedback_id").primaryKey().references(() => deliverableFeedback.id, { onDelete: "cascade" }),
-  taskId: uuid("task_id").references(() => tasks.id, { onDelete: "set null" }),
-  originalTaskId: uuid("original_task_id").notNull(),
-  createdById: uuid("created_by_id").notNull(),
-  requestId: uuid("request_id").notNull(),
-  requestHash: text("request_hash").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("feedback_task_links_task_idx").on(t.taskId)]);
+export const feedbackTaskLinks = pgTable(
+  "feedback_task_links",
+  {
+    feedbackId: uuid("feedback_id")
+      .primaryKey()
+      .references(() => deliverableFeedback.id, { onDelete: "cascade" }),
+    taskId: uuid("task_id").references(() => tasks.id, {
+      onDelete: "set null",
+    }),
+    originalTaskId: uuid("original_task_id").notNull(),
+    createdById: uuid("created_by_id").notNull(),
+    requestId: uuid("request_id").notNull(),
+    requestHash: text("request_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("feedback_task_links_task_idx").on(t.taskId)],
+);
 
 // D's durable handoff; E/F still own activity records and notification delivery.
-export const deliverableOutbox = pgTable("deliverable_outbox", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  eventKey: text("event_key").notNull().unique(),
-  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-  actorId: uuid("actor_id").notNull(),
-  type: text("type").notNull(),
-  payload: jsonb("payload").$type<Record<string, string>>().notNull(),
-  recipientIds: jsonb("recipient_ids").$type<string[]>().notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  deliveredAt: timestamp("delivered_at", { withTimezone: true }),
-}, (t) => [index("deliverable_outbox_pending_idx").on(t.deliveredAt, t.createdAt)]);
+export const deliverableOutbox = pgTable(
+  "deliverable_outbox",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventKey: text("event_key").notNull().unique(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    actorId: uuid("actor_id").notNull(),
+    type: text("type").notNull(),
+    payload: jsonb("payload").$type<Record<string, string>>().notNull(),
+    recipientIds: jsonb("recipient_ids").$type<string[]>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("deliverable_outbox_pending_idx").on(t.deliveredAt, t.createdAt),
+  ],
+);
 
 // C / P0：requestId 幂等账本。契约要求「新变更中使用 requestId 的操作都应保存服务端幂等凭据；
 // 相同标识与内容重放返回原操作结果，相同标识配不同内容返回 CONFLICT」。
@@ -440,10 +560,17 @@ export const writeRequests = pgTable(
     requestId: uuid("request_id").notNull(),
     requestHash: text("request_hash").notNull(),
     result: jsonb("result").$type<unknown>(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
-    uniqueIndex("write_requests_unique").on(t.projectId, t.actorId, t.operation, t.requestId),
+    uniqueIndex("write_requests_unique").on(
+      t.projectId,
+      t.actorId,
+      t.operation,
+      t.requestId,
+    ),
     index("write_requests_created_idx").on(t.createdAt),
   ],
 );
@@ -465,8 +592,12 @@ export const retrospectives = pgTable(
     nextActions: text("next_actions"),
     authorId: uuid("author_id").notNull(),
     revision: integer("revision").notNull().default(1),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     uniqueIndex("retrospectives_iteration_unique").on(t.iterationId),
@@ -497,7 +628,9 @@ export const iterationHistories = pgTable(
     stats: jsonb("stats").notNull(),
     /** UnfinishedDisposition[]：未完成任务各自去了哪里 */
     dispositions: jsonb("dispositions").notNull(),
-    closedAt: timestamp("closed_at", { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     uniqueIndex("iteration_histories_iteration_unique").on(t.iterationId),
@@ -533,10 +666,15 @@ export const iterationDrafts = pgTable(
     candidateTasks: jsonb("candidate_tasks").notNull(),
     sourceRefs: jsonb("source_refs"),
     /** 确认后指向真正建出的那轮，便于重放时原样返回。 */
-    confirmedIterationId: uuid("confirmed_iteration_id").references(() => iterations.id, {
-      onDelete: "set null",
-    }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    confirmedIterationId: uuid("confirmed_iteration_id").references(
+      () => iterations.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     /** 创建后 24 小时到期，由服务端校验 */
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
@@ -567,7 +705,9 @@ export const iterationEvents = pgTable(
     type: text("type").notNull(),
     actorId: uuid("actor_id"),
     payload: jsonb("payload").$type<unknown>(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [index("iteration_events_iteration_idx").on(t.iterationId, t.seq)],
 );
@@ -596,24 +736,40 @@ export const projectActivities = pgTable(
     type: text("type").notNull(),
     summary: text("summary").notNull(),
     /** 只存白名单元信息（ID、changedFields、前后状态），绝不存私有正文 */
-    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     uniqueIndex("project_activities_event_key_unique").on(t.eventKey),
-    index("project_activities_project_time_idx").on(t.projectId, t.occurredAt, t.id),
-    index("project_activities_object_idx").on(t.projectId, t.objectType, t.objectId),
+    index("project_activities_project_time_idx").on(
+      t.projectId,
+      t.occurredAt,
+      t.id,
+    ),
+    index("project_activities_object_idx").on(
+      t.projectId,
+      t.objectType,
+      t.objectId,
+    ),
   ],
 );
-
 
 export const notifications = pgTable(
   "notifications",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    recipientId: uuid("recipient_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-    projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    recipientId: uuid("recipient_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
     type: text("type").notNull(),
     title: text("title").notNull(),
     summary: text("summary"),
@@ -623,20 +779,131 @@ export const notifications = pgTable(
     eventKey: text("event_key").notNull(),
     channel: text("channel").notNull().default("in_app"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     readAt: timestamp("read_at", { withTimezone: true }),
   },
   (t) => [
-    uniqueIndex("notifications_event_recipient_channel_uq")
-      .on(t.eventKey, t.recipientId, t.channel),
+    uniqueIndex("notifications_event_recipient_channel_uq").on(
+      t.eventKey,
+      t.recipientId,
+      t.channel,
+    ),
     index("notifications_recipient_created_idx").on(t.recipientId, t.createdAt),
     index("notifications_recipient_read_idx").on(t.recipientId, t.readAt),
   ],
 );
-export const notificationReadRequests = pgTable("notification_read_requests", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  recipientId: uuid("recipient_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  requestId: uuid("request_id").notNull(),
-  requestHash: text("request_hash").notNull(),
-  result: jsonb("result").$type<{ markedCount: number; asOf: string }>(),
-}, (t) => [uniqueIndex("notification_read_requests_user_request_unique").on(t.recipientId, t.requestId)]);
+export const externalNotificationDeliveries = pgTable(
+  "external_notification_deliveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    notificationId: uuid("notification_id")
+      .notNull()
+      .references(() => notifications.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    errorCode: text("error_code"),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("external_deliveries_notification_unique").on(t.notificationId),
+    index("external_deliveries_retry_idx").on(t.status, t.nextAttemptAt),
+  ],
+);
+
+export const notificationReadRequests = pgTable(
+  "notification_read_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    recipientId: uuid("recipient_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    requestId: uuid("request_id").notNull(),
+    requestHash: text("request_hash").notNull(),
+    result: jsonb("result").$type<{ markedCount: number; asOf: string }>(),
+  },
+  (t) => [
+    uniqueIndex("notification_read_requests_user_request_unique").on(
+      t.recipientId,
+      t.requestId,
+    ),
+  ],
+);
+
+export const taskComments = pgTable(
+  "task_comments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    authorId: uuid("author_id").notNull(),
+    body: text("body").notNull(),
+    mentionedUserIds: jsonb("mentioned_user_ids")
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+    notifiedUserIds: jsonb("notified_user_ids")
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+    revision: integer("revision").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("task_comments_task_idx").on(
+      t.projectId,
+      t.taskId,
+      t.createdAt,
+      t.id,
+    ),
+  ],
+);
+
+export const announcements = pgTable(
+  "announcements",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    authorId: uuid("author_id").notNull(),
+    status: text("status").notNull().default("published"),
+    isPinned: boolean("is_pinned").notNull().default(false),
+    revision: integer("revision").notNull().default(1),
+    publishedAt: timestamp("published_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("announcements_project_idx").on(t.projectId, t.publishedAt, t.id),
+    uniqueIndex("announcements_one_pinned_unique")
+      .on(t.projectId)
+      .where(sql`${t.isPinned} = true`),
+  ],
+);

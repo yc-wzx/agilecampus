@@ -1,9 +1,10 @@
 import { notFound, redirect } from "next/navigation";
 import { z } from "zod";
-import { eq, desc } from "drizzle-orm";
 import { auth } from "@/lib/auth";
-import { db } from "@/db";
-import { conversations, messages as messagesTable } from "@/db/schema";
+import {
+  getOrCreateScopedConversation,
+  listBoundedConversationMessages,
+} from "@/lib/agent/context";
 import { getProjectForUser, listProjectMilestones } from "@/lib/project";
 import { listTeamMembers } from "@/lib/team";
 import { listProjectTasks, listProjectDependencies } from "@/lib/task";
@@ -33,13 +34,14 @@ export default async function ProjectPage({
   if (!access) notFound();
   const { project, role } = access;
 
-  const [projectMilestones, projectTasks, members, dependencies, teamLabels] = await Promise.all([
-    listProjectMilestones(session.user.id, projectId),
-    listProjectTasks(session.user.id, projectId),
-    listTeamMembers(project.teamId),
-    listProjectDependencies(session.user.id, projectId),
-    listTeamLabels(session.user.id, project.teamId),
-  ]);
+  const [projectMilestones, projectTasks, members, dependencies, teamLabels] =
+    await Promise.all([
+      listProjectMilestones(session.user.id, projectId),
+      listProjectTasks(session.user.id, projectId),
+      listTeamMembers(project.teamId),
+      listProjectDependencies(session.user.id, projectId),
+      listTeamLabels(session.user.id, project.teamId),
+    ]);
 
   const filters = parseFilters(
     new URLSearchParams(
@@ -59,20 +61,14 @@ export default async function ProjectPage({
   // 它按 taskId 调 getTaskPanelContextAction，挂载与切换都重新鉴权。取不到只影响面板本身，
   // 用户还在看板上，不会因为一个失效的深链就丢掉整页上下文。
 
-  const [latestConv] = await db
-    .select({ id: conversations.id })
-    .from(conversations)
-    .where(eq(conversations.projectId, projectId))
-    .orderBy(desc(conversations.createdAt))
-    .limit(1);
-
-  const history = latestConv
-    ? await db
-        .select({ role: messagesTable.role, content: messagesTable.content })
-        .from(messagesTable)
-        .where(eq(messagesTable.conversationId, latestConv.id))
-        .orderBy(messagesTable.createdAt)
-    : [];
+  const latestConv = await getOrCreateScopedConversation(
+    session.user.id,
+    projectId,
+    { scope: "project" },
+  );
+  const history = (
+    await listBoundedConversationMessages(session.user.id, latestConv.id)
+  ).items;
 
   const initialMessages = history
     .filter((m) => m.role === "user" || m.role === "assistant")
@@ -82,14 +78,17 @@ export default async function ProjectPage({
     <main className="mx-auto max-w-5xl space-y-8 py-8">
       <header>
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <h1 className="min-w-0 break-words font-display text-2xl font-semibold text-ink">{project.name}</h1>
+          <h1 className="min-w-0 break-words font-display text-2xl font-semibold text-ink">
+            {project.name}
+          </h1>
           <ProjectNav projectId={projectId} current="tasks" />
         </div>
         {project.description && (
           <p className="mt-1 text-sm text-ink-soft">{project.description}</p>
         )}
         <p className="mt-1 text-xs text-ink-faint">
-          {project.startDate ?? "?"} ~ {project.endDate ?? "?"} · {project.status}
+          {project.startDate ?? "?"} ~ {project.endDate ?? "?"} ·{" "}
+          {project.status}
         </p>
       </header>
 
@@ -103,7 +102,10 @@ export default async function ProjectPage({
         <h2 className="font-medium text-ink">看板</h2>
         <FilterBar
           members={members.map((m) => ({ id: m.id, name: m.name }))}
-          milestones={projectMilestones.map((m) => ({ id: m.id, name: m.title }))}
+          milestones={projectMilestones.map((m) => ({
+            id: m.id,
+            name: m.title,
+          }))}
           labels={teamLabels.map((l) => ({ id: l.id, name: l.name }))}
           visible={visibleTasks.length}
           total={projectTasks.length}
@@ -127,7 +129,10 @@ export default async function ProjectPage({
           }))}
           canWrite={canWrite}
           members={members}
-          milestones={projectMilestones.map((m) => ({ id: m.id, name: m.title }))}
+          milestones={projectMilestones.map((m) => ({
+            id: m.id,
+            name: m.title,
+          }))}
           allTasks={projectTasks.map((t) => ({ id: t.id, title: t.title }))}
           dependencies={dependencies}
         />
@@ -144,7 +149,10 @@ export default async function ProjectPage({
         <NewTaskForm
           projectId={projectId}
           members={members}
-          milestones={projectMilestones.map((m) => ({ id: m.id, title: m.title }))}
+          milestones={projectMilestones.map((m) => ({
+            id: m.id,
+            title: m.title,
+          }))}
         />
       )}
     </main>

@@ -1,30 +1,25 @@
-import { asc, desc, eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { conversations, messages } from "@/db/schema";
 import { getProjectForUser } from "@/lib/project";
 import { ForbiddenError, AppError } from "@/lib/errors";
+import { getOrCreateScopedConversation } from "./context";
 
 // 每项目复用最近一条会话（MVP 简化：每项目一活跃会话）
-export async function getOrCreateConversation(actorId: string, projectId: string) {
-  const access = await getProjectForUser(actorId, projectId);
-  if (!access) throw new ForbiddenError();
-
-  const [existing] = await db
-    .select()
-    .from(conversations)
-    .where(eq(conversations.projectId, projectId))
-    .orderBy(desc(conversations.createdAt))
-    .limit(1);
-  if (existing) return existing;
-
-  const [created] = await db
-    .insert(conversations)
-    .values({ projectId, createdById: actorId })
-    .returning();
-  return created;
+export async function getOrCreateConversation(
+  actorId: string,
+  projectId: string,
+) {
+  return getOrCreateScopedConversation(actorId, projectId, {
+    scope: "project",
+  });
 }
 
-export type ToolTraceEntry = { toolName: string; input: unknown; output: unknown };
+export type ToolTraceEntry = {
+  toolName: string;
+  input: unknown;
+  output: unknown;
+};
 
 export async function persistTurn(
   conversationId: string,
@@ -43,12 +38,17 @@ export async function persistTurn(
   ]);
 }
 
-export async function listConversationMessages(actorId: string, conversationId: string) {
+export async function listConversationMessages(
+  actorId: string,
+  conversationId: string,
+) {
   const [conv] = await db
     .select()
     .from(conversations)
     .where(eq(conversations.id, conversationId));
   if (!conv) throw new AppError("会话不存在");
+  if (conv.scope === "personal" && conv.createdById !== actorId)
+    throw new ForbiddenError();
   const access = await getProjectForUser(actorId, conv.projectId);
   if (!access) throw new ForbiddenError();
 
@@ -56,5 +56,6 @@ export async function listConversationMessages(actorId: string, conversationId: 
     .select()
     .from(messages)
     .where(eq(messages.conversationId, conversationId))
-    .orderBy(asc(messages.createdAt));
+    .orderBy(asc(messages.seq))
+    .limit(40);
 }

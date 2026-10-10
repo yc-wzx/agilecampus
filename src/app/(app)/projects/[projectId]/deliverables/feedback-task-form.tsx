@@ -52,7 +52,12 @@ export function FeedbackTaskForm({
   const taskId = createdTaskId ?? existingTaskId;
   const taskHref = taskId ? `/projects/${projectId}?task=${taskId}` : null;
 
-  if (existingTaskDeleted) return <p className="text-xs text-ink-soft">原修改任务已删除。需要继续处理请走普通任务创建流程。</p>;
+  if (existingTaskDeleted)
+    return (
+      <p className="text-xs text-ink-soft">
+        原修改任务已删除。需要继续处理请走普通任务创建流程。
+      </p>
+    );
 
   if (taskHref) {
     return (
@@ -124,7 +129,7 @@ export function FeedbackTaskForm({
             }
             setCreatedTaskId(result.data.taskId);
             setOpen(false);
-
+            window.location.reload();
           } catch {
             setFormError(
               "未能确认创建结果，请刷新核对；重试会返回同一条修改任务，不会重复创建。",
@@ -168,7 +173,10 @@ export function FeedbackTaskForm({
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="space-y-1">
-          <label htmlFor={`fb-assignee-${feedbackId}`} className="block text-xs">
+          <label
+            htmlFor={`fb-assignee-${feedbackId}`}
+            className="block text-xs"
+          >
             负责人
           </label>
           <select
@@ -198,7 +206,10 @@ export function FeedbackTaskForm({
           />
         </div>
         <div className="space-y-1">
-          <label htmlFor={`fb-priority-${feedbackId}`} className="block text-xs">
+          <label
+            htmlFor={`fb-priority-${feedbackId}`}
+            className="block text-xs"
+          >
             优先级
           </label>
           <select

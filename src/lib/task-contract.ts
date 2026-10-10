@@ -1,7 +1,24 @@
-import { and, asc, eq, inArray, isNull, lt, ne, not, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNull,
+  lt,
+  ne,
+  not,
+  or,
+  sql,
+} from "drizzle-orm";
 import { db } from "@/db";
 import type { DbTx } from "@/db";
-import { taskDependencies, tasks, users, type TaskPriority, type TaskStatus } from "@/db/schema";
+import {
+  taskDependencies,
+  tasks,
+  users,
+  type TaskPriority,
+  type TaskStatus,
+} from "@/db/schema";
 import {
   SUBTASK_PROGRESS_MAX_PARENTS,
   type BacklogFilters,
@@ -24,7 +41,12 @@ import {
   type UpdateTaskV1Input,
 } from "@/contracts/p0-p2";
 import { recordProjectActivity } from "./activity";
-import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors";
+import {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+} from "./errors";
 import { normalizePage, pageResult } from "./pagination";
 import { getProjectForUser } from "./project";
 import {
@@ -53,7 +75,9 @@ export const SUMMARY_COLS = {
   sortOrder: tasks.sortOrder,
   milestoneId: tasks.milestoneId,
   parentTaskId: tasks.parentTaskId,
-  sprintId: sql<string | null>`coalesce(${tasks.sprintId}, (select p.sprint_id from tasks p where p.id = ${tasks.parentTaskId} and p.project_id = ${tasks.projectId}))`,
+  sprintId: sql<
+    string | null
+  >`coalesce(${tasks.sprintId}, (select p.sprint_id from tasks p where p.id = ${tasks.parentTaskId} and p.project_id = ${tasks.projectId}))`,
   assigneeId: tasks.assigneeId,
   assigneeName: users.name,
   completionNote: tasks.completionNote,
@@ -162,7 +186,12 @@ export async function listBacklog(
     .from(tasks)
     .where(where);
 
-  return pageResult(rows.map(toTaskSummary), counted?.total ?? 0, offset, limit);
+  return pageResult(
+    rows.map(toTaskSummary),
+    counted?.total ?? 0,
+    offset,
+    limit,
+  );
 }
 
 /** 侧边栏一次取回的聚合数据（定稿 9.2 的固定服务 getTaskPanelData）。 */
@@ -228,7 +257,11 @@ export async function getTaskPanelData(
 type Exec = DbTx | typeof db;
 
 /** 事务内按 id 取回 TaskSummary（含负责人姓名）。归属不符一律当作「不存在」。 */
-async function summaryById(exec: Exec, projectId: string, taskId: string): Promise<TaskSummary> {
+async function summaryById(
+  exec: Exec,
+  projectId: string,
+  taskId: string,
+): Promise<TaskSummary> {
   const [row] = await exec
     .select(SUMMARY_COLS)
     .from(tasks)
@@ -238,7 +271,12 @@ async function summaryById(exec: Exec, projectId: string, taskId: string): Promi
   return toTaskSummary(row);
 }
 
-function taskKey(projectId: string, actorId: string, operation: string, requestId: string) {
+function taskKey(
+  projectId: string,
+  actorId: string,
+  operation: string,
+  requestId: string,
+) {
   return { projectId, actorId, operation, requestId };
 }
 
@@ -317,14 +355,22 @@ export async function deleteTaskV1(
         await requireTaskWrite(actorId, projectId);
 
         const [task] = await tx
-          .select({ id: tasks.id, projectId: tasks.projectId, updatedAt: tasks.updatedAt })
+          .select({
+            id: tasks.id,
+            projectId: tasks.projectId,
+            updatedAt: tasks.updatedAt,
+          })
           .from(tasks)
           .where(eq(tasks.id, taskId))
           .for("update");
-        if (!task || task.projectId !== projectId) throw new NotFoundError("任务不存在");
+        if (!task || task.projectId !== projectId)
+          throw new NotFoundError("任务不存在");
 
         const expected = new Date(input.expectedUpdatedAt);
-        if (Number.isNaN(expected.getTime()) || expected.getTime() !== task.updatedAt.getTime()) {
+        if (
+          Number.isNaN(expected.getTime()) ||
+          expected.getTime() !== task.updatedAt.getTime()
+        ) {
           throw new ConflictError("任务已被他人修改，请刷新后重试");
         }
 
@@ -350,7 +396,9 @@ export async function getSubtaskProgress(
   const ids = [...new Set(parentTaskIds)];
   if (ids.length === 0) return [];
   if (ids.length > SUBTASK_PROGRESS_MAX_PARENTS) {
-    throw new ValidationError(`一次最多查询 ${SUBTASK_PROGRESS_MAX_PARENTS} 个父任务`);
+    throw new ValidationError(
+      `一次最多查询 ${SUBTASK_PROGRESS_MAX_PARENTS} 个父任务`,
+    );
   }
 
   // 父任务本身也要属于本项目：拿别的项目的任务 id 混进来，概览就会算错。
@@ -367,12 +415,17 @@ export async function getSubtaskProgress(
       doneCount: sql<number>`(count(*) filter (where ${tasks.status} = 'done'))::int`,
     })
     .from(tasks)
-    .where(and(eq(tasks.projectId, projectId), inArray(tasks.parentTaskId, ids)))
+    .where(
+      and(eq(tasks.projectId, projectId), inArray(tasks.parentTaskId, ids)),
+    )
     .groupBy(tasks.parentTaskId);
 
   const byParent = new Map(
     rows
-      .filter((r): r is typeof r & { parentTaskId: string } => r.parentTaskId !== null)
+      .filter(
+        (r): r is typeof r & { parentTaskId: string } =>
+          r.parentTaskId !== null,
+      )
       .map((r) => [r.parentTaskId, r]),
   );
 
@@ -390,7 +443,10 @@ export async function getSubtaskProgress(
 }
 
 /** 面板只要一个任务的进度，走内部单条查询，不必为它凑一个数组。 */
-async function getSubtaskProgressExec(exec: Exec, parentTaskId: string): Promise<SubtaskProgress> {
+async function getSubtaskProgressExec(
+  exec: Exec,
+  parentTaskId: string,
+): Promise<SubtaskProgress> {
   const [row] = await exec
     .select({
       total: sql<number>`count(*)::int`,
@@ -428,15 +484,24 @@ export async function setTaskBlocked(
         await requireTaskWrite(actorId, projectId);
 
         const [task] = await tx
-          .select({ id: tasks.id, projectId: tasks.projectId, updatedAt: tasks.updatedAt,
-            isBlocked: tasks.isBlocked, blockedReason: tasks.blockedReason })
+          .select({
+            id: tasks.id,
+            projectId: tasks.projectId,
+            updatedAt: tasks.updatedAt,
+            isBlocked: tasks.isBlocked,
+            blockedReason: tasks.blockedReason,
+          })
           .from(tasks)
           .where(eq(tasks.id, taskId))
           .for("update");
-        if (!task || task.projectId !== projectId) throw new NotFoundError("任务不存在");
+        if (!task || task.projectId !== projectId)
+          throw new NotFoundError("任务不存在");
 
         const expected = new Date(input.expectedUpdatedAt);
-        if (Number.isNaN(expected.getTime()) || expected.getTime() !== task.updatedAt.getTime()) {
+        if (
+          Number.isNaN(expected.getTime()) ||
+          expected.getTime() !== task.updatedAt.getTime()
+        ) {
           throw new ConflictError("任务已被他人修改，请刷新后重试");
         }
 
@@ -450,7 +515,9 @@ export async function setTaskBlocked(
           .set({
             isBlocked: input.isBlocked,
             blockedReason: input.isBlocked ? reason : null,
-            blockedAt: input.isBlocked ? sql`coalesce(${tasks.blockedAt}, now())` : null,
+            blockedAt: input.isBlocked
+              ? sql`coalesce(${tasks.blockedAt}, now())`
+              : null,
             updatedAt: sql`greatest(date_trunc('milliseconds', clock_timestamp()), date_trunc('milliseconds', ${tasks.updatedAt}) + interval '1 millisecond')`,
           })
           .where(eq(tasks.id, taskId));
@@ -458,22 +525,39 @@ export async function setTaskBlocked(
         // 名字不复用上面的 task：那一份是带行锁的原始行，这里是给调用方的 TaskSummary
         const updated = await summaryById(tx, projectId, taskId);
         const changedState = task.isBlocked !== input.isBlocked;
-        const changedReason = task.blockedReason !== (input.isBlocked ? reason : null);
-        const type = changedState ? input.isBlocked ? "task.blocked" : "task.unblocked" : "task.updated";
-        if (changedState || changedReason) await recordProjectActivity(tx, {
-          eventKey: `${type}:${taskId}:${updated.updatedAt}`,
-          projectId,
-          actorId,
-          objectType: "task",
-          objectId: taskId,
-          type,
-          summary: !changedState ? `更新了任务《${updated.title}》的阻塞原因`
-            : input.isBlocked ? `阻塞了任务《${updated.title}》` : `解除了任务《${updated.title}》的阻塞`,
-          occurredAt: updated.updatedAt,
-          // 阻塞原因的原文是私有协作内容，活动里只留长度，不留正文
-          metadata: !changedState ? { taskId, changedFields: ["blockedReason"] }
-            : input.isBlocked ? { taskId, blockedReasonLength: reason.length } : { taskId },
-        });
+        const changedReason =
+          task.blockedReason !== (input.isBlocked ? reason : null);
+        const type = changedState
+          ? input.isBlocked
+            ? "task.blocked"
+            : "task.unblocked"
+          : "task.updated";
+        if (changedState || changedReason)
+          await recordProjectActivity(tx, {
+            eventKey: `${type}:${taskId}:${updated.updatedAt}`,
+            projectId,
+            actorId,
+            objectType: "task",
+            objectId: taskId,
+            type,
+            summary: !changedState
+              ? `更新了任务《${updated.title}》的阻塞原因`
+              : input.isBlocked
+                ? `阻塞了任务《${updated.title}》`
+                : `解除了任务《${updated.title}》的阻塞`,
+            occurredAt: updated.updatedAt,
+            // 阻塞原因的原文是私有协作内容，活动里只留长度，不留正文
+            metadata: {
+              ...(!changedState
+                ? { taskId, changedFields: ["blockedReason"] }
+                : input.isBlocked
+                  ? { taskId, blockedReasonLength: reason.length }
+                  : { taskId }),
+              iterationId: updated.iterationId,
+              milestoneId: updated.milestoneId,
+              assigneeId: updated.assigneeId,
+            },
+          });
         return { task: updated };
       },
     ),
@@ -510,7 +594,11 @@ export async function getProjectTaskStats(
     .from(tasks)
     .where(and(eq(tasks.projectId, projectId), isNull(tasks.parentTaskId)));
 
-  const byStatus: Record<TaskStatusValue, number> = { todo: 0, doing: 0, done: 0 };
+  const byStatus: Record<TaskStatusValue, number> = {
+    todo: 0,
+    doing: 0,
+    done: 0,
+  };
   let overdueCount = 0;
   let blockedCount = 0;
 
@@ -518,7 +606,8 @@ export async function getProjectTaskStats(
     byStatus[row.status] += 1;
     if (row.isBlocked) blockedCount += 1;
     // 没有日期不算逾期；已完成也不算
-    if (row.status !== "done" && row.dueDate !== null && row.dueDate < today) overdueCount += 1;
+    if (row.status !== "done" && row.dueDate !== null && row.dueDate < today)
+      overdueCount += 1;
   }
 
   const total = rows.length;
@@ -572,11 +661,19 @@ export async function listProjectTaskAttention(
   );
 
   const rows = await db
-    .select({ id: tasks.id, title: tasks.title, dueDate: tasks.dueDate, blockedAt: tasks.blockedAt })
+    .select({
+      id: tasks.id,
+      title: tasks.title,
+      dueDate: tasks.dueDate,
+      blockedAt: tasks.blockedAt,
+    })
     .from(tasks)
     .where(where)
     // 越该被看到的排越前：逾期久的在前，阻塞久的在前
-    .orderBy(asc(filters.kind === "overdue" ? tasks.dueDate : tasks.blockedAt), asc(tasks.id))
+    .orderBy(
+      asc(filters.kind === "overdue" ? tasks.dueDate : tasks.blockedAt),
+      asc(tasks.id),
+    )
     .limit(limit)
     .offset(offset);
 

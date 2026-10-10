@@ -13,6 +13,7 @@
  *    交付后把对应 `pending(...)` 换成 `queryPart(...)` 调用即可，页面无需改动。
  */
 import { listProjectActivities } from "@/lib/activity";
+import { getPinnedAnnouncement } from "@/lib/announcements";
 import { getProjectDeliverableStats } from "@/lib/deliverable-reporting";
 import { ForbiddenError, NotFoundError } from "@/lib/errors";
 import { getCurrentIteration } from "@/lib/iteration";
@@ -22,7 +23,6 @@ import type {
   ActivityPage,
   AnnouncementItem,
   CurrentIteration,
-  ErrorCode,
   ProjectDeliverableStats,
   ProjectTaskStats,
   QueryPart,
@@ -53,10 +53,6 @@ export type ProjectOverviewSummary = {
 };
 
 /** 未交付依赖的占位：明确写“待接入”，不用 0 或空数组冒充真实结果。 */
-function pending<T>(message: string): QueryPart<T> {
-  return { state: "unavailable", code: "INTERNAL" as ErrorCode, message };
-}
-
 /**
  * 单项查询包装：权限/认证类错误向上抛（整体拒绝），其余服务故障降级为局部不可用。
  * 不把数据库错误文本透传到浏览器。
@@ -69,7 +65,8 @@ async function queryPart<T>(
     return { state: "ready", data: await run() };
   } catch (error) {
     // 访问类错误不能降级成“暂时不可用”，否则会掩盖越权或项目不存在
-    if (error instanceof ForbiddenError || error instanceof NotFoundError) throw error;
+    if (error instanceof ForbiddenError || error instanceof NotFoundError)
+      throw error;
     console.error(
       `[project-overview] ${label}查询失败`,
       error instanceof Error ? error.name : "UnknownError",
@@ -107,9 +104,11 @@ export async function getProjectOverviewSummary(
     // D 已交付：真实项目成果统计
     queryPart("成果统计", () => getProjectDeliverableStats(actorId, projectId)),
     // F 待接入：项目置顶公告（F-A02 getPinnedAnnouncement）
-    pending<AnnouncementItem | null>("项目公告功能尚未接入"),
+    queryPart("项目公告", () => getPinnedAnnouncement(actorId, projectId)),
     // E 已交付：最近活动（E-A02 listProjectActivities）。空结果是空列表，不是降级。
-    queryPart("项目动态", () => listProjectActivities(actorId, projectId, { limit: 10 })),
+    queryPart("项目动态", () =>
+      listProjectActivities(actorId, projectId, { limit: 10 }),
+    ),
   ]);
 
   return {

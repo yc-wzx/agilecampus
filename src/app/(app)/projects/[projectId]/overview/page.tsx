@@ -5,7 +5,12 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ActivityFeed } from "@/components/activity/activity-feed";
 import { MyProjectTodos } from "@/components/activity/my-project-todos";
 import { ProjectNav } from "@/components/projects/project-nav";
-import { DeliverableProgress, TaskProgress } from "@/components/projects/progress";
+import { ProjectAnnouncement } from "@/components/project-announcement";
+import { ProjectRisks } from "@/components/project-risks";
+import {
+  DeliverableProgress,
+  TaskProgress,
+} from "@/components/projects/progress";
 import { QueryUnavailable } from "@/components/projects/query-state";
 import { SetupGuide } from "@/components/projects/setup-guide";
 import { auth } from "@/lib/auth";
@@ -94,6 +99,8 @@ export default async function ProjectOverviewPage({
   return (
     <main className="mx-auto max-w-4xl space-y-6 py-8">
       <ProjectNav projectId={projectId} current="overview" />
+      <ProjectAnnouncement projectId={projectId} />
+      <ProjectRisks actorId={session.user.id} projectId={projectId} />
 
       {/* 项目头部：名称、简介/目标、周期、状态 */}
       <section className="ac-card p-6">
@@ -181,8 +188,9 @@ export default async function ProjectOverviewPage({
                 </p>
               )}
               <p className="mt-2 text-xs text-ink-faint">
-                {activeIteration.data.startDate} ~ {activeIteration.data.endDate} ·
-                已完成 {activeIteration.data.doneCount}/
+                {activeIteration.data.startDate} ~{" "}
+                {activeIteration.data.endDate} · 已完成{" "}
+                {activeIteration.data.doneCount}/
                 {activeIteration.data.taskTotal}
                 {activeIteration.data.taskTotal === 0 ? "（本轮暂无任务）" : ""}
               </p>
@@ -192,10 +200,7 @@ export default async function ProjectOverviewPage({
           )}
         </section>
       ) : (
-        <QueryUnavailable
-          title="当前迭代"
-          message={activeIteration.message}
-        />
+        <QueryUnavailable title="当前迭代" message={activeIteration.message} />
       )}
 
       {/* 里程碑 */}

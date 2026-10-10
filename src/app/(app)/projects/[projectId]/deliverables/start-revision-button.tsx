@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useRef, useState } from "react";
 
 import { startDeliverableRevisionAction } from "./actions";
 
@@ -22,7 +22,7 @@ export function StartRevisionButton({
   status: string;
 }) {
   const [error, setError] = useState("");
-  const [pending, startTransition] = useTransition();
+  const [pending, setPending] = useState(false);
   const locked = useRef(false);
   const request = useRef(requestId);
 
@@ -40,7 +40,8 @@ export function StartRevisionButton({
           if (locked.current) return;
           locked.current = true;
           setError("");
-          startTransition(async () => {
+          setPending(true);
+          void (async () => {
             try {
               const result = await startDeliverableRevisionAction(
                 projectId,
@@ -48,13 +49,14 @@ export function StartRevisionButton({
                 { requestId: request.current, expectedRevision: revision },
               );
               if (!result.ok) setError(result.error);
-
+              else window.location.reload();
             } catch {
               setError("未能确认结果，请刷新核对；重试不会生成两个草稿。");
             } finally {
               locked.current = false;
+              setPending(false);
             }
-          });
+          })();
         }}
       >
         {pending ? "处理中…" : "开始修改（新建草稿）"}

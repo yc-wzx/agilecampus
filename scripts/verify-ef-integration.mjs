@@ -68,7 +68,6 @@ try {
   await page.getByLabel("成果说明").fill("访谈结果已整理");
   await page.getByRole("button", { name: "保存草稿", exact: true }).click();
   await page.getByRole("link", { name: "查看成果链接", exact: true }).waitFor();
-  await page.reload();
   await page.getByRole("button", { name: "正式提交", exact: true }).waitFor();
   await page.evaluate(() => { const b = [...document.querySelectorAll("button")].find((button) => button.textContent === "正式提交"); b.click(); b.click(); });
   await page.getByRole("heading", { name: "已提交版本（1）", exact: true }).waitFor();
@@ -103,7 +102,7 @@ try {
   await teacher.page.getByText("退回必须填写修改意见，学生据此修改。", { exact: true }).waitFor();
   await teacher.page.locator("#review-comment").fill("补充访谈证据");
   await teacher.page.getByRole("button", { name: "确认退回", exact: true }).click();
-  await teacher.page.getByText("补充访谈证据", { exact: true }).waitFor();
+  await teacher.page.locator('[id^="feedback-"]').getByText("补充访谈证据", { exact: true }).waitFor();
   assert.equal(await teacher.page.getByRole("button", { name: "将这条意见转为修改任务", exact: true }).count(), 0);
   await page.goto(origin + "/dashboard");
   const revisionLink = page.locator("#revisions").getByRole("link", { name: title, exact: true });
@@ -125,15 +124,14 @@ try {
   await page.getByRole("button", { name: "开始修改（新建草稿）", exact: true }).click();
   await page.getByLabel("成果说明", { exact: true }).waitFor();
   await page.getByLabel("成果说明", { exact: true }).fill("私有第二版内容");
-  const savedResponse = page.waitForResponse((response) => response.request().method() === "POST" && response.url().includes("/deliverables/"));
+  const savedNavigation = page.waitForEvent("load");
   await page.getByRole("button", { name: "保存草稿", exact: true }).click();
-  await savedResponse;
+  await savedNavigation;
   await page.waitForFunction(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent === "保存草稿"); return b && !b.disabled; });
   assert.equal((await sql`select working_copy from deliverables where id=${id}`)[0].working_copy.description, "私有第二版内容");
   await teacher.page.goto(detailUrl);
   assert.equal(await teacher.page.getByText("私有第二版内容", { exact: true }).count(), 0);
   assert.equal(await teacher.page.getByRole("button", { name: "开始修改（新建草稿）", exact: true }).count(), 0);
-  await page.reload();
   await page.getByRole("button", { name: "正式提交", exact: true }).click();
   await page.getByRole("heading", { name: "已提交版本（2）", exact: true }).waitFor();
   assert.equal((await sql`select count(*)::int as n from deliverable_versions where deliverable_id=${id}`)[0].n, 2);

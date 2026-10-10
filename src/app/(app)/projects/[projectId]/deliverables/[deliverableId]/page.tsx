@@ -225,7 +225,7 @@ export default async function DeliverablePage({
             {item.workingCopy ? "编辑新版本草稿" : "编辑草稿"}
           </h2>
           <DeliverableEditor
-            key={item.revision}
+            key={item.id}
             projectId={projectId}
             deliverableId={item.id}
             revision={item.revision}
