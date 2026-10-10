@@ -16,6 +16,7 @@ import { Board } from "./board";
 import { ChatPanel } from "./chat-panel";
 import { FilterBar } from "./filter-bar";
 import { ProjectNav } from "@/components/projects/project-nav";
+import { ProjectLeadership } from "@/components/projects/project-leadership";
 
 export default async function ProjectPage({
   params,
@@ -91,6 +92,13 @@ export default async function ProjectPage({
           {project.status}
         </p>
       </header>
+
+      <ProjectLeadership
+        actorId={session.user.id}
+        projectId={projectId}
+        canManage={isAdmin && project.status !== "archived"}
+        members={members}
+      />
 
       <MilestoneSection
         projectId={projectId}

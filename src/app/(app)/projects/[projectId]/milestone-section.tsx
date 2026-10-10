@@ -42,12 +42,12 @@ export function MilestoneSection({
         )}
       </ul>
       {isAdmin && (
-        <form action={formAction} className="flex items-end gap-2">
+        <form action={formAction} className="flex flex-wrap items-end gap-2">
           <input type="hidden" name="projectId" value={projectId} />
           <input
             name="title"
             placeholder="里程碑标题"
-            className="ac-field w-auto text-sm"
+            className="ac-field min-w-0 flex-1 text-sm"
           />
           <input type="date" name="targetDate" className="ac-field w-auto text-sm" />
           <button disabled={pending} className="ac-btn px-3 py-2 text-sm">

@@ -2,7 +2,7 @@
 
 面向高校课程团队的轻量项目管理网站。在[老师原始项目](https://github.com/sdiver/agilecampus)基础上增量开发，保留团队、看板、任务、甘特、AI 助手和资源登记，完善“规划任务 → 迭代开发 → 提交成果 → 教师反馈 → 修改重交 → 复盘与证据导出”。
 
-本轮补齐原规划 P0–P2 的代码及部署方案。服务器尚未购买，应用未公网部署；腾讯文档团队项目主页独立保留。真实同学试用、真实飞书／AI、阿里云容器与公网验收仍需实际条件，不能将本地通过写成已经上线。
+已补齐原规划 P0–P2 的代码及部署方案，并接入五项此前完成的 P3 功能。服务器尚未购买，应用未公网部署；腾讯文档团队项目主页独立保留。真实同学试用、真实飞书／AI、阿里云容器与公网验收仍需实际条件，不能将本地通过写成已经上线。
 
 ## 团队新增功能
 
@@ -23,12 +23,17 @@
 | AI 迭代草案【本轮补齐】 | 只选已有任务，生成／调整／取消／预览／明确确认后创建计划迭代；24 小时有效，版本变化拒绝旧方案 |
 | 站内与外部通知【本轮补齐】 | 原指派／成果／迭代通知保留；补到期、完成、@、公告、外部发送队列与退避重试、渠道状态 |
 | 部署与恢复【本轮补齐】 | 版本化迁移、健康检查、内部定时提醒、HTTPS 配置、备份／独立恢复／代码回退工具 |
+| 校园项目模板【P3 本轮接入】 | 创建时选择空白／课程／科研／竞赛，非空白项目自动建立四个建议阶段 |
+| 负责人交接【P3 本轮接入】 | 管理员指定／更换／清空负责人，成员查看交接历史；不提升权限 |
+| 会议与资料【P3 本轮接入】 | 登记、编辑、筛选会议／文档／视频／原型链接；会议可记纪要、录制、参会人和阶段 |
+| 截止日期日历【P3 本轮接入】 | 下载项目、里程碑和任务截止日期的 `.ics` 快照 |
+| 成果版本对比【P3 本轮接入】 | 比较同一成果两个正式提交的标题／说明增删、链接和阶段等变化，私有草稿不参与 |
 
 任务完成率按主任务计算，成果通过率按当前正式成果计算，两者独立展示。无正式成果显示“暂无正式提交”；查询失败显示不可用，不用零条冒充成功。旧活动没有记录就不补造；已删除评论正文不导出。成果目前登记外部链接，不是内置网盘。
 
 原有团队与角色、跨项目列表、拖拽看板、标签／依赖、甘特、AI 两段确认、Personal API Token、Agent 写入 API、资源占用登记继续保留。原 plan_sprint 语义保持兼容。
 
-完整入口与接口交接见 [P0–P2 补齐说明](docs/p0-p2-completion.md)；32 项逐条状态见 [六人最新进度](docs/team-progress-20261009.md)；固定接口以 [契约 v2.0](docs/team-interface-contract.md) 为准。负责人本地 P3 试验没有混入本轮。
+完整入口与接口交接见 [P0–P2 补齐说明](docs/p0-p2-completion.md)与 [P3 接入说明](docs/p3-project-extensions.md)；逐条状态见 [六人最新进度](docs/team-progress-20261009.md)；固定接口以 [契约 v2.0 与 P3 增量接口](docs/team-interface-contract.md) 为准。只接入已完成的五项 P3，其他 P3 候选和 P4 没有记作完成。
 
 ## 主要入口
 
@@ -41,6 +46,9 @@
 | /projects/{id} | 任务看板、详情侧栏／评论、原 AI 助手 |
 | /projects/{id}/iterations | 任务池、迭代；详情含结束预览、历史和复盘 |
 | /projects/{id}/deliverables | 成果列表／创建；详情含版本、审核、重交和反馈任务 |
+| /projects/{id}/deliverables/{deliverableId}/compare | 两个正式成果版本的内容对比 |
+| /projects/{id}/references | 会议、纪要、录制及其他资料链接 |
+| /api/projects/{id}/calendar | 登录后下载截止日期日历；项目导航有导出按钮 |
 | /projects/{id}/announcements | 公告列表和管理 |
 | /projects/{id}/reports | 规则周报与下载 |
 | /projects/{id}/evidence | 原成果证据筛选／导出 |
@@ -52,7 +60,7 @@
 
 ## 本地启动与测试
 
-技术栈：Next.js 16.2 · React 19 · TypeScript · PostgreSQL 16 · Drizzle · Auth.js v5 · AI SDK v5 · Tailwind v4 · Vitest。使用 Node.js 22 或以上。
+技术栈：Next.js 16.2 · React 19 · TypeScript · PostgreSQL 16 · Drizzle · Auth.js v5 · AI SDK v5 · Tailwind v4 · Vitest。使用 Node.js 22 或 24 及以上（P3 日历依赖不支持 Node.js 23）。
 
 ```bash
 docker compose up -d
@@ -79,6 +87,7 @@ npm run build
 - scripts/verify-ef-integration.mjs：原成果、迭代、活动与通知串联。
 - scripts/verify-p0-p2-browser.mjs：公告／评论／@／周报／证据／草案／教师页／手机宽度；需要 Playwright、Edge 和本地服务。
 - scripts/verify-local-recovery.mjs：需要 PostgreSQL 客户端，可用 PG_BIN 指定路径；只在本地创建独立源库与恢复库，不覆盖已有库。
+- scripts/p3-browser-smoke.mjs：验证五项 P3 功能、越权拒绝、失败保留输入和 320／390／430px 关键页面。
 
 浏览器脚本通过 B_TEST_URL 指定本地站点，通过 PLAYWRIGHT_MODULE 指定已安装 Playwright；cron 验收的 EF_TEST_CRON_SECRET 必须与本地服务一致。脚本使用合成账号，草案夹具和模拟模型不代表真实 AI 调用。
 
@@ -101,7 +110,7 @@ node scripts/ops.mjs backup
 
 ## 验证状态
 
-本轮最终测试数字见 [最新进度的验证记录](docs/team-progress-20261009.md)。已完成本地旧库升级和真实 pg_dump／pg_restore 独立恢复：15 张业务表内容一致、恢复后可写、重复迁移正常。
+本轮最终测试数字见 [最新进度的验证记录](docs/team-progress-20261009.md)。已完成旧库增量升级至 `0012` 和真实 pg_dump／pg_restore 独立恢复：18 张业务表内容一致、迁移账本 13 条、恢复后可写、重复迁移正常。
 
 真实同学试用按 [匿名模板](docs/usability-trial-template.md) 记录。阿里云容器／HTTPS／公网／镜像回退，以及飞书／AI 真实条件，仍须后续补验。
 

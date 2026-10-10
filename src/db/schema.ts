@@ -93,6 +93,11 @@ export const projects = pgTable(
     status: projectStatusEnum("status").notNull().default("active"),
     startDate: date("start_date"),
     endDate: date("end_date"),
+    templateId: text("template_id").notNull().default("blank"),
+    leaderId: uuid("leader_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    leaderRevision: integer("leader_revision").notNull().default(0),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [index("projects_team_idx").on(t.teamId)],
@@ -906,4 +911,86 @@ export const announcements = pgTable(
       .on(t.projectId)
       .where(sql`${t.isPinned} = true`),
   ],
+);
+
+export const projectCreationRequests = pgTable("project_creation_requests", {
+  requestId: uuid("request_id").primaryKey(),
+  requestHash: text("request_hash").notNull(),
+  projectId: uuid("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+});
+
+export const projectLeadChanges = pgTable(
+  "project_lead_changes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // Historical identities/names must survive a member leaving or a user being deleted.
+    actorId: uuid("actor_id").notNull(),
+    actorName: text("actor_name").notNull(),
+    previousLeaderId: uuid("previous_leader_id"),
+    previousLeaderName: text("previous_leader_name"),
+    leaderId: uuid("leader_id"),
+    leaderName: text("leader_name"),
+    revision: integer("revision").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("project_lead_changes_revision_unique").on(
+      t.projectId,
+      t.revision,
+    ),
+  ],
+);
+
+export const projectReferenceTypeEnum = pgEnum("project_reference_type", [
+  "meeting",
+  "document",
+  "video",
+  "prototype",
+  "other",
+]);
+export type ProjectReferenceType =
+  (typeof projectReferenceTypeEnum.enumValues)[number];
+export const projectReferences = pgTable(
+  "project_references",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    createdById: uuid("created_by_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    title: text("title").notNull(),
+    type: projectReferenceTypeEnum("type").notNull(),
+    url: text("url").notNull(),
+    minutesUrl: text("minutes_url"),
+    recordingUrl: text("recording_url"),
+    meetingDate: date("meeting_date"),
+    participants: jsonb("participants")
+      .$type<{ id: string; name: string }[]>()
+      .notNull()
+      .default([]),
+    milestoneId: uuid("milestone_id").references(() => milestones.id, {
+      onDelete: "set null",
+    }),
+    milestoneTitle: text("milestone_title"),
+    note: text("note").notNull().default(""),
+    revision: integer("revision").notNull().default(1),
+    requestId: uuid("request_id").notNull().unique(),
+    requestHash: text("request_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("project_references_project_idx").on(t.projectId, t.createdAt)],
 );

@@ -1,4 +1,6 @@
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { z } from "zod";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   milestones,
@@ -6,10 +8,29 @@ import {
   teamMembers,
   teams,
   tasks,
+  projectCreationRequests,
   type ProjectStatus,
 } from "@/db/schema";
-import { AppError, ForbiddenError } from "./errors";
+import { AppError, ConflictError, ForbiddenError } from "./errors";
 import { getTeamMembership, requireTeamRole } from "./team";
+import { PROJECT_TEMPLATES } from "./project-templates";
+
+const createProjectSchema = z
+  .object({
+    name: z.string().trim().min(1, "请填写项目名称").max(200),
+    description: z.string().trim().max(10000).optional(),
+    startDate: z.iso.date().optional(),
+    endDate: z.iso.date().optional(),
+    templateId: z
+      .enum(["blank", "course", "research", "competition"])
+      .default("blank"),
+    requestId: z.uuid().optional(),
+  })
+  .strict()
+  .refine(
+    (v) => !v.startDate || !v.endDate || v.startDate <= v.endDate,
+    "结束日期不能早于开始日期",
+  );
 
 export async function createProject(
   actorId: string,
@@ -19,20 +40,72 @@ export async function createProject(
     description?: string;
     startDate?: string;
     endDate?: string;
+    templateId?: "blank" | "course" | "research" | "competition";
+    requestId?: string;
   },
 ) {
-  await requireTeamRole(actorId, teamId, ["admin"]);
-  const [project] = await db
-    .insert(projects)
-    .values({
-      teamId,
-      name: input.name,
-      description: input.description,
-      startDate: input.startDate,
-      endDate: input.endDate,
-    })
-    .returning();
-  return project;
+  if (
+    !z.uuid().safeParse(actorId).success ||
+    !z.uuid().safeParse(teamId).success
+  )
+    throw new ForbiddenError();
+  const parsed = createProjectSchema.safeParse(input);
+  if (!parsed.success) throw new AppError(parsed.error.issues[0].message);
+  const { requestId, ...content } = parsed.data;
+  const hash = createHash("sha256")
+    .update(JSON.stringify({ actorId, teamId, ...content }))
+    .digest("hex");
+  return db.transaction(async (tx) => {
+    const [member] = await tx
+      .select()
+      .from(teamMembers)
+      .where(
+        and(eq(teamMembers.userId, actorId), eq(teamMembers.teamId, teamId)),
+      )
+      .for("share");
+    if (member?.role !== "admin") throw new ForbiddenError();
+    if (requestId) {
+      // Serialize identical request keys before creating anything, including milestones.
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${requestId}, 0))`,
+      );
+      const [prior] = await tx
+        .select()
+        .from(projectCreationRequests)
+        .where(eq(projectCreationRequests.requestId, requestId));
+      if (prior) {
+        if (prior.requestHash !== hash)
+          throw new ConflictError("创建请求已使用，请刷新页面后重试");
+        const [project] = await tx
+          .select()
+          .from(projects)
+          .where(eq(projects.id, prior.projectId));
+        return project;
+      }
+    }
+    const [project] = await tx
+      .insert(projects)
+      .values({ teamId, ...content })
+      .returning();
+    const template = PROJECT_TEMPLATES.find(
+      (t) => t.id === content.templateId,
+    )!;
+    if (template.milestones.length) {
+      await tx
+        .insert(milestones)
+        .values(
+          template.milestones.map((title) => ({
+            projectId: project.id,
+            title,
+          })),
+        );
+    }
+    if (requestId)
+      await tx
+        .insert(projectCreationRequests)
+        .values({ requestId, requestHash: hash, projectId: project.id });
+    return project;
+  });
 }
 
 export async function listTeamProjects(actorId: string, teamId: string) {
@@ -65,7 +138,9 @@ export async function updateProject(
     .update(projects)
     .set({
       ...(patch.name !== undefined && { name: patch.name }),
-      ...(patch.description !== undefined && { description: patch.description }),
+      ...(patch.description !== undefined && {
+        description: patch.description,
+      }),
       ...(patch.startDate !== undefined && { startDate: patch.startDate }),
       ...(patch.endDate !== undefined && { endDate: patch.endDate }),
       ...(patch.status !== undefined && { status: patch.status }),
@@ -104,7 +179,10 @@ export async function getProjectDetail(actorId: string, projectId: string) {
 
 // 页面/任务层的访问收敛点：项目不存在或非团队成员一律 null，不泄露存在性
 export async function getProjectForUser(actorId: string, projectId: string) {
-  const [project] = await db.select().from(projects).where(eq(projects.id, projectId));
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, projectId));
   if (!project) return null;
   const membership = await getTeamMembership(actorId, project.teamId);
   if (!membership) return null;
@@ -125,7 +203,10 @@ export async function createMilestone(
   return milestone;
 }
 
-export async function listProjectMilestones(actorId: string, projectId: string) {
+export async function listProjectMilestones(
+  actorId: string,
+  projectId: string,
+) {
   const access = await getProjectForUser(actorId, projectId);
   if (!access) throw new ForbiddenError();
   return db

@@ -5,6 +5,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ActivityFeed } from "@/components/activity/activity-feed";
 import { MyProjectTodos } from "@/components/activity/my-project-todos";
 import { ProjectNav } from "@/components/projects/project-nav";
+import { ProjectLeadership } from "@/components/projects/project-leadership";
 import { ProjectAnnouncement } from "@/components/project-announcement";
 import { ProjectRisks } from "@/components/project-risks";
 import {
@@ -131,6 +132,12 @@ export default async function ProjectOverviewPage({
       </section>
 
       {/* 空项目引导：未完成时才出现，允许跳过 */}
+      <ProjectLeadership
+        actorId={session.user.id}
+        projectId={projectId}
+        canManage={summary.role === "admin" && project.status !== "archived"}
+        members={teamMembers}
+      />
       <SetupGuide steps={setupSteps} />
 
       {/* 双进展：任务完成情况与成果验收情况分别显示，口径不混用 */}

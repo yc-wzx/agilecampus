@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CalendarDownload } from "@/app/(app)/projects/[projectId]/extras/calendar-download";
 
 /**
  * 项目内部导航（B 主写，第 9.10 节：概览 / 任务 / 迭代 / 成果能进入，旧甘特与 AI 入口仍可用）。
@@ -13,6 +14,7 @@ export type ProjectNavKey =
   | "tasks"
   | "iterations"
   | "deliverables"
+  | "references"
   | "announcements"
   | "reports"
   | "evidence"
@@ -83,6 +85,12 @@ export function ProjectNav({
       enabled: true,
     },
     {
+      key: "references",
+      label: "会议与资料",
+      href: `/projects/${projectId}/references`,
+      enabled: true,
+    },
+    {
       key: "timeline",
       label: "时间线",
       href: `/projects/${projectId}/timeline`,
@@ -114,6 +122,7 @@ export function ProjectNav({
             </Link>
           );
         })}
+      <CalendarDownload projectId={projectId} />
     </nav>
   );
 }

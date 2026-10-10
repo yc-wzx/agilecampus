@@ -85,6 +85,13 @@
       "when": 1791558667232,
       "tag": "0011_scoped_ai_notification_delivery",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791596019475,
+      "tag": "0012_p3_project_extensions",
+      "breakpoints": true
     }
   ]
 }

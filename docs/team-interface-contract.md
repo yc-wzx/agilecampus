@@ -10,18 +10,18 @@
 
 团队协作仓库：[yc-wzx/agilecampus](https://github.com/yc-wzx/agilecampus)。老师的 sdiver/agilecampus 是原始参考仓库。
 
-本次核对基线：团队 `master`，已合并 PR #1 和 PR #2，提交 `edfe765f90acc11de613e7d84dac4a34c49c57c6`。以后拉取最新 master，并在交接中写出实际提交号；本文件的核对状态不自动代表后续提交状态。
+原定稿核对基线为 PR #1/#2 后的 `edfe765`；当前实现基线更新为 P0–P2 补齐 PR #10 后的 `7041e9a`，本轮另接入五项 P3。以后拉取最新 master，并在交接中写出实际提交号；本文件的核对状态不自动代表后续提交状态。
 
 | 标记 | 含义 |
 |---|---|
 | 【已有】 | 在本次基线中有真实代码，可以按源码接入 |
 | 【待接入】 | 服务已有，使用方页面、消费者或整条链路还缺接入 |
 | 【待实现】 | 接口名称、路径和契约已经固定，提供方仍需实现；调用方可按固定类型开发，但不能冒充真实服务已可用 |
-| 【本地 P3】 | 负责人本地已有扩展，本次 master 未包含，不能据此导入 |
+| 【P3 接入】 | 本轮五项扩展已接入，新增接口见第 14 节；其他候选不据此视为完成 |
 
-当前核对更新至 2026-10-09：A 的 P0 工作台与 P1 待修改成果列表已合并（PR #1/#3）；D 的 P0—P2 后端随 PR #2 合并；C 的任务/迭代、历史复盘、阻塞统计与 AI 草案确认后端经评审修复后合并（PR #5，包含 PR #4 全部提交）；B 补齐审核/重交、反馈转任务、项目概览与 D 成果证据导出页面（PR #6）。E 的 P0 项目动态已提交并合并 PR #7；本轮进一步修复 E 接入并整合 F 的 P0 通知（固定导入 @/lib/notification），任务/迭代和 D 组合事件消费者已接入。评论/@、公告、站内到期规则与外部重试、统一过程证据及完整 AI 草案管理仍待完成。存在组件或事件表不代表整阶段完成；本次只更新交付状态，固定接口、32 项规划及职责保持不变。最新实际结果见 README、team-progress-20261009.md 与 integration-review-2026-10-09.md。
+当前核对更新至 2026-10-10：PR #10 已补齐原 P0–P2 的评论/@、公告、站内到期规则与外部重试、周报、风险、统一过程证据、教师总览、完整 AI 草案管理及部署恢复代码，保留此前 A/B/C/D/E/F 已合并模块。服务器尚未购买，真实试用、真实飞书／AI 与目标服务器验收仍待实际条件。存在代码不代表真实条件已验收；固定 P0–P2 接口、32 项规划及职责保持不变。最新逐条结果见 README、team-progress-20261009.md 与 p0-p2-completion.md。
 
-负责人本地 P3 的模板、会议资料、日历、负责人调整和版本对比，另行合并时再补契约。其他同学目前不要依赖这些仅在本地的函数。
+【P3 接入】本轮已整合模板、会议资料、日历、负责人交接和正式成果版本对比，接口补充在第 14 节；无需更改现有 P0–P2 调用方。说明见 [P3 接入文档](p3-project-extensions.md)。
 
 ## 2. 每个人对接口负责什么
 
@@ -704,3 +704,49 @@ P2草案只选择已有任务，模型输出taskId必须来自本次有权任务
 | P2-09 | 最终回归 | 全员，F统筹 | OPS08，第12节P2串联和真实条件记录 |
 
 使用方法：每人认领自己的行，填对应实现提交、接口交接和真实联调结果。涉及多个成员的一行只有完整链路跑通才算完成；后端已交付、页面没接入时写“服务完成/页面待接”，不能把整行勾成已完成。
+
+## 14. P3 增量接口（2026-10-10）
+
+本节为【P3 接入】补充，不改第 3—13 节冻结的 P0–P2 参数、DTO、状态或事件目录。浏览器新写入沿用 `Result<T>`，五个错误码为 `UNAUTHENTICATED / FORBIDDEN / VALIDATION / CONFLICT / INTERNAL`。
+
+### 14.1 模板和读取服务
+
+| 服务导入 | 签名／返回 | 约束 |
+|---|---|---|
+| `@/lib/project`：`createProject` | 原 `actorId, teamId, input` 保留；input 新增可选 `templateId`、`requestId` | 模板 `blank / course / research / competition`，默认 blank；管理员创建；同请求不重复建立项目／阶段 |
+| `@/lib/project-extras`：`listProjectReferences` | `(actorId, projectId, { offset?, type? } = {})` → `{ items, offset, nextOffset }` | 每页 50 条，类型为下表五种；当前团队可读，返回当前角色的可编辑标记 |
+| 同上：`getProjectLeadership` | `(actorId, projectId)` → `{ leaderId, name, active, revision, changes }` | active 表示当前仍在团队；changes 为最近 20 条，数据库保留全部历史 |
+| `@/lib/project-calendar`：`exportProjectCalendar` | `(actorId, projectId, origin)` → `{ content, count }` | 当前团队可读；只含有截止日期的事项；content 为 ICS 文本 |
+| `@/lib/deliverable-comparison`：`getDeliverableComparison` | `(actorId, projectId, deliverableId, fromId, toId)` → `{ from, to, title, description, links, metadata, changed }` | 两个 ID 都是同一成果的正式版本；权限复用 D 查询，不包含私有工作稿 |
+
+日历浏览器入口为 `GET /api/projects/{projectId}/calendar`，使用 session，返回下载文件。未登录 401、无权限／项目 ID 无效 403、内部错误 500；禁止共享缓存，不新增无需登录的公开订阅地址。
+
+### 14.2 浏览器写 Action
+
+固定导入路径：`@/app/(app)/projects/[projectId]/extras/actions`。四个 Action 都从 session 获取操作人，浏览器参数不传 actorId。
+
+| Action | 参数 | 成功 data／权限 |
+|---|---|---|
+| `createProjectReferenceAction` | `(projectId, input: ReferenceInput)` | 当前记录对象；当前团队成员创建 |
+| `updateProjectReferenceAction` | `(projectId, id, input: UpdateReferenceInput & { requestId: string })` | 当前记录对象；创建者或管理员修改 |
+| `deleteProjectReferenceAction` | `(projectId, id, { expectedRevision, requestId })` | `{ id, deleted: true }`；创建者或管理员删除 |
+| `setProjectLeaderAction` | `(projectId, { leaderId, expectedRevision, requestId })` | `{ revision, changed }`；只允许团队管理员；leaderId 为当前成员 UUID 或 null |
+
+`ReferenceInput / UpdateReferenceInput / LeadInput` 类型从 `@/lib/project-extras` 导入，使用 `import type`，不得将服务实现带入客户端。资料 input 字段：
+
+| 字段 | 类型／要求 |
+|---|---|
+| title | 非空字符串，最多 200 字 |
+| type | `meeting / document / video / prototype / other` |
+| url | 必填完整 HTTP/HTTPS 链接，最多 2048 字；不包含账号密码或控制字符 |
+| minutesUrl / recordingUrl | 可选链接或 null；仅 meeting 使用 |
+| meetingDate | 可选 `YYYY-MM-DD` 或 null；仅 meeting 使用 |
+| participantIds | 可选 UUID 数组，默认空、去重、最多 100 个；必须是当前团队成员，仅 meeting 使用 |
+| milestoneId | 可选 UUID 或 null，必须属于当前项目 |
+| note | 可选字符串，默认空，最多 5000 字 |
+| requestId | 新 Action 必填 UUID；同一次操作安全重试使用同一个 ID |
+| expectedRevision | 修改／删除资料必填，至少 1；负责人变更必填，至少 0 |
+
+读写都核对当前成员与权限；归档项目只读。资料增删改及负责人交接使用事务、版本校验和请求去重：旧版本拒绝覆盖；同键不同内容返回 CONFLICT；重试不绕过角色变化，不复活已删除资料。业务服务中保留的可选 requestId 仅为旧本地调用兼容，新浏览器 Action 始终必填。
+
+页面保存成功自动完整刷新重新读库，失败保留输入；不靠用户手动刷新显示结果。P3 没有新增活动／通知枚举，原 E/F 消费契约保持不变。迁移为 `0012_p3_project_extensions`；生产仍使用 `db:migrate`。
