@@ -994,3 +994,96 @@ export const projectReferences = pgTable(
   },
   (t) => [index("project_references_project_idx").on(t.projectId, t.createdAt)],
 );
+
+// Personal timetable and work plans never belong to shared project conversations.
+export const personalScheduleState = pgTable("personal_schedule_state", {
+  userId: uuid("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  revision: integer("revision").notNull().default(0),
+  preferences: jsonb("preferences").notNull().default({}),
+});
+
+export const personalScheduleEvents = pgTable(
+  "personal_schedule_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    startAt: timestamp("start_at", { withTimezone: true }).notNull(),
+    endAt: timestamp("end_at", { withTimezone: true }).notNull(),
+    fingerprint: text("fingerprint").notNull(),
+    source: text("source").notNull(),
+    revision: integer("revision").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("personal_events_user_fingerprint").on(t.userId, t.fingerprint),
+    index("personal_events_user_start").on(t.userId, t.startAt),
+  ],
+);
+
+export const personalScheduleRequests = pgTable(
+  "personal_schedule_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    operation: text("operation").notNull(),
+    requestId: uuid("request_id").notNull(),
+    requestHash: text("request_hash").notNull(),
+    result: jsonb("result"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("personal_requests_unique").on(
+      t.userId,
+      t.operation,
+      t.requestId,
+    ),
+  ],
+);
+
+export const personalWorkPlans = pgTable(
+  "personal_work_plans",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("draft"),
+    revision: integer("revision").notNull().default(1),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    goal: text("goal").notNull(),
+    mode: text("mode").notNull(),
+    snapshotHash: text("snapshot_hash").notNull(),
+    scheduleRevision: integer("schedule_revision").notNull(),
+    input: jsonb("input").notNull(),
+    items: jsonb("items").notNull(),
+    unmet: jsonb("unmet").notNull(),
+    warnings: jsonb("warnings").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("personal_plans_owner_project").on(
+      t.userId,
+      t.projectId,
+      t.createdAt,
+    ),
+  ],
+);

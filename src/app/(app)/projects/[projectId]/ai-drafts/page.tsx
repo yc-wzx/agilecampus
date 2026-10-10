@@ -55,7 +55,7 @@ export default async function Page({
           {access.project.name} · AI 助手
         </h1>
         <ProjectNav projectId={projectId} current="ai" />
-        <nav className="flex gap-3 text-sm">
+        <nav className="flex flex-wrap gap-3 text-sm">
           <Link
             href={`?scope=project`}
             aria-current={scope === "project" ? "page" : undefined}
@@ -69,6 +69,7 @@ export default async function Page({
             我的个人会话
           </Link>
           <Link href={`/projects/${projectId}/iterations`}>手动规划迭代</Link>
+          <Link href={`/projects/${projectId}/personal-plan`}>结合课表规划我的工作</Link>
         </nav>
       </header>
       <ChatPanel

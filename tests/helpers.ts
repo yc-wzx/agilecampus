@@ -1,7 +1,11 @@
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
+import { drainPendingTaskNotifications } from "@/lib/notify";
 
 export async function resetDb() {
+  // Task writes intentionally dispatch after returning. Do not race their database
+  // transactions against TRUNCATE, which can deadlock or leak work into the next test.
+  await drainPendingTaskNotifications();
   // C 新增的 iterations / write_requests / retrospectives / iteration_events 与
   // E 新增的 project_activities 一并在此清空：虽然它们外键指向 projects、会被 CASCADE
   // 连带清掉，但显式列出更稳，也避免将来有人改了外键行为后测试悄悄脏数据。

@@ -92,6 +92,13 @@
       "when": 1791596019475,
       "tag": "0012_p3_project_extensions",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791606045714,
+      "tag": "0013_personal_schedule_planning",
+      "breakpoints": true
     }
   ]
 }

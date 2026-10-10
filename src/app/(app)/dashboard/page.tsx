@@ -205,6 +205,7 @@ export default async function DashboardPage({
     <main className="mx-auto max-w-3xl space-y-6 py-8">
       <header className="space-y-1">
         <h1 className="font-display text-2xl font-semibold text-ink">工作台</h1>
+        <Link className="block text-sm text-primary underline" href="/schedule">我的课表与日程</Link>
         {teacherAccess && (
           <Link className="text-sm text-primary underline" href="/teacher">
             教师项目总览
