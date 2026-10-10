@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { randomUUID } from "node:crypto";
 import { notFound, redirect } from "next/navigation";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
@@ -28,7 +29,10 @@ export default async function ProjectsPage({
       <ul className="space-y-2">
         {projects.map((p) => (
           <li key={p.id} className="ac-card p-4">
-            <Link href={`/projects/${p.id}`} className="font-medium text-primary hover:underline">
+            <Link
+              href={`/projects/${p.id}`}
+              className="font-medium text-primary hover:underline"
+            >
               {p.name}
             </Link>
             <span className="ml-2 text-xs text-ink-soft">{p.status}</span>
@@ -48,7 +52,7 @@ export default async function ProjectsPage({
           </li>
         )}
       </ul>
-      {isAdmin && <ProjectForm teamId={teamId} />}
+      {isAdmin && <ProjectForm teamId={teamId} requestId={randomUUID()} />}
     </main>
   );
 }

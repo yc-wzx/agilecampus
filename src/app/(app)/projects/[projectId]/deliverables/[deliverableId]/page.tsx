@@ -54,7 +54,11 @@ export default async function DeliverablePage({
   // 权限与隐私由服务端判定：他人私有草稿一律按“不存在”处理
   let detail;
   try {
-    detail = await getDeliverableDetail(session.user.id, projectId, deliverableId);
+    detail = await getDeliverableDetail(
+      session.user.id,
+      projectId,
+      deliverableId,
+    );
   } catch (error) {
     if (error instanceof ForbiddenError) notFound();
     throw error;
@@ -92,7 +96,8 @@ export default async function DeliverablePage({
       ? sp.versionId
       : null;
   const focusFeedbackId =
-    typeof sp.feedbackId === "string" && z.uuid().safeParse(sp.feedbackId).success
+    typeof sp.feedbackId === "string" &&
+    z.uuid().safeParse(sp.feedbackId).success
       ? sp.feedbackId
       : null;
   const focusVersion = focusVersionId
@@ -118,6 +123,14 @@ export default async function DeliverablePage({
   return (
     <main className="mx-auto max-w-3xl space-y-5 py-8">
       <ProjectNav projectId={projectId} current="deliverables" />
+      {detail.versions.length > 0 && (
+        <Link
+          href={`/projects/${projectId}/deliverables/${deliverableId}/compare`}
+          className="ac-btn-ghost"
+        >
+          查看与比较版本
+        </Link>
+      )}
       <LocateTarget targetId={scrollTargetId} />
 
       <Link
@@ -137,7 +150,12 @@ export default async function DeliverablePage({
         </p>
       )}
 
-      {(focusVersionId && !focusVersion || focusFeedbackId && !focusFeedback) && <p className="ac-card p-3 text-sm text-ink-soft">链接指向的版本或反馈不可用，请核对链接与访问权限。</p>}
+      {((focusVersionId && !focusVersion) ||
+        (focusFeedbackId && !focusFeedback)) && (
+        <p className="ac-card p-3 text-sm text-ink-soft">
+          链接指向的版本或反馈不可用，请核对链接与访问权限。
+        </p>
+      )}
       <header className="space-y-2">
         <h1 className="break-words font-display text-2xl font-semibold text-ink">
           {item.title}
@@ -275,8 +293,9 @@ export default async function DeliverablePage({
                 第 {version.versionNumber} 版 · {version.title}
               </h3>
               <p className="text-xs text-ink-faint">
-                {formatDate(version.submittedAt)} · {DELIVERABLE_LABELS[version.type]}{" "}
-                · {version.milestoneTitle ?? "未关联里程碑"} · 提交人{" "}
+                {formatDate(version.submittedAt)} ·{" "}
+                {DELIVERABLE_LABELS[version.type]} ·{" "}
+                {version.milestoneTitle ?? "未关联里程碑"} · 提交人{" "}
                 {nameOf(version.submittedById)}
               </p>
               <p className="break-words whitespace-pre-wrap">
@@ -304,7 +323,8 @@ export default async function DeliverablePage({
                   >
                     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-faint">
                       <span className="ac-badge bg-surface text-ink-soft">
-                        {DECISION_LABELS[feedback.decision] ?? feedback.decision}
+                        {DECISION_LABELS[feedback.decision] ??
+                          feedback.decision}
                       </span>
                       <span>{nameOf(feedback.reviewerId)}</span>
                       <span>{formatDate(feedback.createdAt)}</span>
@@ -353,7 +373,9 @@ export default async function DeliverablePage({
                 }`}
               >
                 <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-faint">
-                  <span className="ac-badge bg-sunken text-ink-soft">里程碑反馈</span>
+                  <span className="ac-badge bg-sunken text-ink-soft">
+                    里程碑反馈
+                  </span>
                   <span>{feedback.milestoneTitle ?? "未关联里程碑"}</span>
                   <span>{nameOf(feedback.reviewerId)}</span>
                   <span>{formatDate(feedback.createdAt)}</span>

@@ -46,7 +46,7 @@ node scripts/ops.mjs smoke
 
 ## 3. 升级与旧数据库
 
-本轮新增 `0010_comments_announcements`、`0011_scoped_ai_notification_delivery`。必须提交 SQL、snapshot、journal 三者；生产只运行版本化迁移，不运行 `db:push`。有完整账本的旧库先做备份和副本验证，再升级。本轮已验证从 `0007` 升级到 `0011`，保留原用户、团队、角色、项目、任务和成果。
+P0–P2 新增 `0010_comments_announcements`、`0011_scoped_ai_notification_delivery`，P3 接入新增 `0012_p3_project_extensions`。必须提交 SQL、snapshot、journal 三者；生产只运行版本化迁移，不运行 `db:push`。有完整账本的旧库先做备份和副本验证，再升级。已验证 `0007 → 0011` 和 `0011 → 0012`，保留原用户、团队、角色、项目、任务、成果及新增协作数据。
 
 老师早期用 `db:push` 建立且没有 `drizzle.__drizzle_migrations` 账本的库，不能直接重放 `0000`。先在独立副本核对 schema 与基线迁移，再初始化匹配的账本；禁止在实际库清表重建。全新租用服务器的空库不涉及此问题。
 
@@ -72,7 +72,9 @@ node scripts/ops.mjs backup
 node scripts/ops.mjs restore-drill /绝对路径/agilecampus/backups/实际备份.dump
 ```
 
-备份是 PostgreSQL 自定义格式全库备份，包含业务表和迁移账本；生成 `.dump.json` 校验值与提交号、`.restore.json` 恢复记录。恢复脚本仅创建新的 `agilecampus_restore_时间戳` 数据库，不覆盖原库、不删除卷。核对用户/项目/任务/评论/公告/成果版本数量，并用对应代码验证来源记录和写入。自动数量核对不能替代业务抽查。
+备份是 PostgreSQL 自定义格式全库备份，包含业务表和迁移账本；生成 `.dump.json` 校验值与提交号、`.restore.json` 恢复记录。恢复脚本仅创建新的 `agilecampus_restore_时间戳` 数据库，不覆盖原库、不删除卷。核对用户/项目/任务/评论/公告/成果版本数量，以及 P3 的模板、负责人历史和会议资料，并用对应代码验证来源记录和写入。自动数量核对不能替代业务抽查。
+
+本地 `scripts/verify-local-recovery.mjs` 已真实验证：先建立 `0011` 旧库并升级至 `0012`，原数据保留；独立恢复后 18 张业务表内容与 13 条迁移账本一致，消息和 P3 资料仍可写，重复迁移通过。本地耗时不代表阿里云实际恢复耗时。
 
 建议每天备份、展示前和发布前额外备份；保留最近 7 份日备份及最近 4 份周备份。将备份与校验文件复制到另外一台可信设备或私有存储，限制下载权限。脚本不会自动删除旧备份；实际留存清理由负责人确认，不能只在原服务器上保留唯一副本。
 

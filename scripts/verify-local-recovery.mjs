@@ -64,7 +64,22 @@ function pg(command, args) {
 try {
   await admin.unsafe(`CREATE DATABASE ${sourceName}`);
   await admin.unsafe(`CREATE DATABASE ${restoredName}`);
-  await migrate(drizzle(source), { migrationsFolder: "drizzle" });
+  const journal = JSON.parse(
+    fs.readFileSync("drizzle/meta/_journal.json", "utf8"),
+  );
+  const baselineFolder = path.join(folder, `baseline-${suffix}`);
+  fs.mkdirSync(path.join(baselineFolder, "meta"), { recursive: true });
+  const baselineEntries = journal.entries.filter((entry) => entry.idx <= 11);
+  for (const entry of baselineEntries)
+    fs.copyFileSync(
+      path.join("drizzle", entry.tag + ".sql"),
+      path.join(baselineFolder, entry.tag + ".sql"),
+    );
+  fs.writeFileSync(
+    path.join(baselineFolder, "meta/_journal.json"),
+    JSON.stringify({ ...journal, entries: baselineEntries }),
+  );
+  await migrate(drizzle(source), { migrationsFolder: baselineFolder });
   const user = randomUUID(),
     team = randomUUID(),
     project = randomUUID(),
@@ -91,8 +106,6 @@ try {
   await source`insert into iteration_drafts(id,project_id,created_by_id,conversation_id,name,start_date,end_date,candidate_tasks,expires_at) values(${draft},${project},${user},${conv},'测试草案','2026-10-12','2026-10-18','[]',now()+interval '1 day')`;
   await source`insert into notifications(id,recipient_id,project_id,type,title,source_type,source_id,href,event_key) values(${notice},${user},${project},'task.overdue','恢复通知','task',${task},${"/projects/" + project + "?task=" + task},'recovery-fixture')`;
   await source`insert into external_notification_deliveries(notification_id,status,error_code,attempts) values(${notice},'failed','PROVIDER_TEST',2)`;
-  pg("pg_dump", ["-d", sourceName, "-Fc", "-f", dump]);
-  pg("pg_restore", ["-d", restoredName, "--exit-on-error", "--no-owner", dump]);
   const tables = [
     "users",
     "teams",
@@ -110,14 +123,54 @@ try {
     "notifications",
     "external_notification_deliveries",
   ];
+  const read = (sql, table) =>
+    sql.unsafe(
+      `select row_to_json(t) as row from ${table} t order by row_to_json(t)::text`,
+    );
+  const before = new Map();
+  for (const table of tables) before.set(table, await read(source, table));
+  await migrate(drizzle(source), { migrationsFolder: "drizzle" });
   for (const table of tables) {
-    const read = (sql) =>
-      sql.unsafe(
-        `select row_to_json(t) as row from ${table} t order by row_to_json(t)::text`,
-      );
+    const old = before.get(table),
+      actual = await read(source, table);
+    assert.equal(
+      actual.length,
+      old.length,
+      `${table} row count changed on upgrade`,
+    );
     assert.deepEqual(
-      await read(target),
-      await read(source),
+      actual.map(({ row }, index) => ({
+        row: Object.fromEntries(
+          Object.keys(old[index].row).map((key) => [key, row[key]]),
+        ),
+      })),
+      Array.from(old),
+      `${table} legacy data changed on upgrade`,
+    );
+  }
+  const [legacyProject] =
+    await source`select template_id,leader_id,leader_revision from projects where id=${project}`;
+  assert.deepEqual(legacyProject, {
+    template_id: "blank",
+    leader_id: null,
+    leader_revision: 0,
+  });
+  await source`update projects set template_id='course',leader_id=${user},leader_revision=1 where id=${project}`;
+  await source`insert into project_creation_requests(request_id,request_hash,project_id) values(${randomUUID()},'synthetic',${project})`;
+  await source`insert into project_lead_changes(project_id,actor_id,actor_name,leader_id,leader_name,revision) values(${project},${user},'独立恢复测试',${user},'独立恢复测试',1)`;
+  const reference = randomUUID();
+  await source`insert into project_references(id,project_id,created_by_id,title,type,url,minutes_url,meeting_date,participants,note,request_id,request_hash) values(${reference},${project},${user},'恢复会议','meeting','https://meeting.tencent.com/example','https://docs.qq.com/example','2026-10-10',${JSON.stringify([{ id: user, name: "独立恢复测试" }])}::jsonb,'会议说明',${randomUUID()},'synthetic')`;
+  tables.push(
+    "project_creation_requests",
+    "project_lead_changes",
+    "project_references",
+  );
+  pg("pg_dump", ["-d", sourceName, "-Fc", "-f", dump]);
+  pg("pg_restore", ["-d", restoredName, "--exit-on-error", "--no-owner", dump]);
+  for (const table of tables) {
+    assert.deepEqual(
+      await read(target, table),
+      await read(source, table),
       `${table} contents differ`,
     );
   }
@@ -128,6 +181,9 @@ try {
   const [next] =
     await target`insert into messages(conversation_id,role,content) values(${conv},'assistant','恢复后仍可写') returning seq`;
   assert.ok(next.seq > 1);
+  const [savedReference] =
+    await target`update project_references set revision=revision+1,note='恢复后可修改' where id=${reference} returning revision`;
+  assert.equal(savedReference.revision, 2);
   await migrate(drizzle(target), { migrationsFolder: "drizzle" });
   const [ledger] =
     await target`select count(*)::int as total from drizzle.__drizzle_migrations`;
@@ -146,6 +202,9 @@ try {
     migrationLedger: ledger.total,
     postRestoreWrite: true,
     migrationReplay: true,
+    upgradedFrom: "0011",
+    legacyDataPreserved: true,
+    p3PostRestoreWrite: true,
   };
   fs.writeFileSync(
     path.join(folder, "recovery.json"),
