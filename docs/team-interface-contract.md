@@ -750,3 +750,56 @@ P2草案只选择已有任务，模型输出taskId必须来自本次有权任务
 读写都核对当前成员与权限；归档项目只读。资料增删改及负责人交接使用事务、版本校验和请求去重：旧版本拒绝覆盖；同键不同内容返回 CONFLICT；重试不绕过角色变化，不复活已删除资料。业务服务中保留的可选 requestId 仅为旧本地调用兼容，新浏览器 Action 始终必填。
 
 页面保存成功自动完整刷新重新读库，失败保留输入；不靠用户手动刷新显示结果。P3 没有新增活动／通知枚举，原 E/F 消费契约保持不变。迁移为 `0012_p3_project_extensions`；生产仍使用 `db:migrate`。
+
+## 15. P3 个人课表与短期工作规划（2026-10-10）
+
+【本轮新增】独立增量，不修改 P0–P2 的任务／迭代／成果 DTO、Action 签名或 E/F 事件目录。本人课表和个人计划不进入共享项目证据、共享会话及通知。入口 `/schedule` 与 `/projects/{projectId}/personal-plan`；后者从项目「AI 与草案」进入。
+
+### 15.1 浏览器对象 Action
+
+固定导入 `@/app/(app)/schedule/actions`。所有 Action 包括预览均经 `runAction` 校验 session，操作人由服务端取得；返回原 `Result<T>` 和五种固定错误码。客户端类型用 `import type` 从 `@/lib/schedule/types` 和 `@/lib/schedule/importer` 导入。
+
+| Action | 参数 | 成功 data |
+|---|---|---|
+| `previewScheduleAction` | `PreviewImportInput` | `{ events: ScheduleEventInput[], warnings: string[] }`，只解析不写库 |
+| `importScheduleAction` | `{ requestId, source: "ics" | "csv", events }` | `{ added, skipped, revision }`，本人范围去重 |
+| `addManualScheduleAction` | `ManualScheduleInput & { requestId }` | 同导入结果，source 固定 manual |
+| `saveSchedulePreferencesAction` | `{ requestId, expectedRevision, preferences }` | `{ revision }`，成功后重新读取本人偏好 |
+| `changeScheduleEventAction` | `(id, { requestId, expectedRevision, event? })` | 修改／删除结果；传 event 修改，不传则删除；仅本人 |
+| `generatePersonalPlanAction` | `(projectId, GeneratePlanInput)` | 私有计划视图；不改共享任务或迭代 |
+| `changePersonalPlanAction` | `(projectId, id, { requestId, expectedRevision, action: "confirm" | "cancel" })` | 当前私有计划视图 |
+
+所有新写入的 `requestId` 必填 UUID；版本为整数，个人偏好从 0 起，日程／计划从 1 起。同一次操作的安全重试使用同一个 UUID；换内容时不能复用，返回 CONFLICT。读取他人对象拒绝，重试也重新核对当前身份和项目权限。
+
+### 15.2 输入字段
+
+| 类型 | 固定字段 |
+|---|---|
+| `PreviewImportInput` | `format: "ics" | "csv"`；content 非空且最多 200,000 字符；startDate/endDate 为 ISO 日，范围最多 187 天 |
+| `ScheduleEventInput` | title 1–100 字；startAt/endAt 为带 UTC 或偏移量的 ISO 时间；结束晚于开始，单次最多 7 天 |
+| `ManualScheduleInput` | title 1–100 字；start/end 为北京时间 `YYYY-MM-DDTHH:mm`，单次最多 24 小时；repeatWeeks 1–26 默认 1；intervalWeeks 1 或 2 默认 1 |
+| `SchedulePreferences` | workStart/workEnd 为 HH:mm 且同日开始早于结束；days 数组 0–6（周日为 0），至少一天；dailyMinutes 30–240；blockMinutes 30／45／60；bufferMinutes 0–60 |
+| `GeneratePlanInput` | requestId；startDate 今天至未来 14 天；days 7／14；mode ai／rules；goal 最多 1000 字默认空；selections 1–40 个 `{ taskId: UUID, minutes }`，任务不可重复，minutes 15–2400 且为 15 的倍数 |
+
+不能依据任务完成率自动猜剩余工时，因此每项任务由学生填写估计。支持每周／隔周课程和受限 ICS 重复规则；格式、模板与限制见 [使用说明](p3-personal-schedule-planning.md)。
+
+### 15.3 服务与返回类型
+
+| 服务 | 读取范围与返回 |
+|---|---|
+| `@/lib/schedule/store`：`getMySchedule(actorId, { startDate?, endDate?, offset? } = {})` | 仅本人；items 每页 50 个、nextOffset、revision、preferences；查看范围最多 188 天；日期序列化为 ISO 字符串 |
+| `@/lib/schedule/planner`：`getPlanningWorkspace(actorId, projectId, { startDate?, days?, offset? } = {})` | 当前项目成员的本人数据；project／stats／preferences／candidates／candidateTotal／plans／nextOffset；最多 40 个任务候选，计划每页 10 条 |
+| 同上：`generatePersonalPlan(actorId, projectId, input)` | 当前学生／管理员；本人未完成、未阻塞、无未完成前置依赖的叶子任务；归档拒绝 |
+| 同上：`changePersonalPlan(actorId, projectId, id, input)` | 只能本人确认／取消，确认时重新检查当前项目角色、课表、偏好和任务快照 |
+
+计划视图包含 id、status、revision、goal、mode、startDate/endDate、items、unmet、warnings、isStale、expiresAt、confirmedAt。状态为 draft／confirmed／cancelled，读取已过期草案时显示 expired（不新增共享状态枚举）。`items: WorkBlock[]` 每段含 taskId/title/objective/reason/startAt/endAt/minutes；`unmet: UnmetWork[]` 含 taskId/title/minutes/reason，明确显示未排完工作。
+
+### 15.4 硬性规则与并发
+
+AI 只提出真实选中任务的顺序、目标和理由。服务端按 15 分钟粒度限制工作星期／时段、课程与日程、休息缓冲、跨项目已确认安排和每日总工时，再考虑任务开始日与最早阶段期限。输出包含陌生任务、重复／遗漏任务、错误 JSON 时拒绝保存；不可静默冒充成功或切换为 AI。未配置模型时可由用户明确选择 rules。
+
+个人写入串行锁定本人的偏好状态行。AI 请求有生成租约、同一人同时最多一个请求；模型计算在事务外，完成后检查原任务／课表快照仍一致。草案有效 24 小时；确认时要求未过期、工作段未开始、快照未变化且至少有一个工作段。同项目重叠的已确认安排须先取消，其他项目安排作为忙碌时间和已投入分钟扣除。
+
+课表名称和原始日程不发送给模型；模型获得可投入容量和项目任务内容。确认只改 `personal_work_plans`，不改任务状态、负责人、日期或团队迭代。没有写入 E/F 活动事件和通知，因此其他成员无需增加枚举适配。
+
+迁移 `0013_personal_schedule_planning` 新增 `personal_schedule_state / personal_schedule_events / personal_schedule_requests / personal_work_plans` 四表，全库备份包含这些私有数据。服务器使用原 `db:migrate` 发布流程；真实 AI 与学生课表样本另行验收。

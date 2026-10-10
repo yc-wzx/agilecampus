@@ -69,7 +69,7 @@ try {
   );
   const baselineFolder = path.join(folder, `baseline-${suffix}`);
   fs.mkdirSync(path.join(baselineFolder, "meta"), { recursive: true });
-  const baselineEntries = journal.entries.filter((entry) => entry.idx <= 11);
+  const baselineEntries = journal.entries.filter((entry) => entry.idx <= 12);
   for (const entry of baselineEntries)
     fs.copyFileSync(
       path.join("drizzle", entry.tag + ".sql"),
@@ -127,6 +127,16 @@ try {
     sql.unsafe(
       `select row_to_json(t) as row from ${table} t order by row_to_json(t)::text`,
     );
+  await source`update projects set template_id='course',leader_id=${user},leader_revision=1 where id=${project}`;
+  await source`insert into project_creation_requests(request_id,request_hash,project_id) values(${randomUUID()},'synthetic',${project})`;
+  await source`insert into project_lead_changes(project_id,actor_id,actor_name,leader_id,leader_name,revision) values(${project},${user},'独立恢复测试',${user},'独立恢复测试',1)`;
+  const reference = randomUUID();
+  await source`insert into project_references(id,project_id,created_by_id,title,type,url,minutes_url,meeting_date,participants,note,request_id,request_hash) values(${reference},${project},${user},'恢复会议','meeting','https://meeting.tencent.com/example','https://docs.qq.com/example','2026-10-10',${JSON.stringify([{ id: user, name: "独立恢复测试" }])}::jsonb,'会议说明',${randomUUID()},'synthetic')`;
+  tables.push(
+    "project_creation_requests",
+    "project_lead_changes",
+    "project_references",
+  );
   const before = new Map();
   for (const table of tables) before.set(table, await read(source, table));
   await migrate(drizzle(source), { migrationsFolder: "drizzle" });
@@ -151,19 +161,21 @@ try {
   const [legacyProject] =
     await source`select template_id,leader_id,leader_revision from projects where id=${project}`;
   assert.deepEqual(legacyProject, {
-    template_id: "blank",
-    leader_id: null,
-    leader_revision: 0,
+    template_id: "course",
+    leader_id: user,
+    leader_revision: 1,
   });
-  await source`update projects set template_id='course',leader_id=${user},leader_revision=1 where id=${project}`;
-  await source`insert into project_creation_requests(request_id,request_hash,project_id) values(${randomUUID()},'synthetic',${project})`;
-  await source`insert into project_lead_changes(project_id,actor_id,actor_name,leader_id,leader_name,revision) values(${project},${user},'独立恢复测试',${user},'独立恢复测试',1)`;
-  const reference = randomUUID();
-  await source`insert into project_references(id,project_id,created_by_id,title,type,url,minutes_url,meeting_date,participants,note,request_id,request_hash) values(${reference},${project},${user},'恢复会议','meeting','https://meeting.tencent.com/example','https://docs.qq.com/example','2026-10-10',${JSON.stringify([{ id: user, name: "独立恢复测试" }])}::jsonb,'会议说明',${randomUUID()},'synthetic')`;
+  const personalEvent = randomUUID(),
+    personalPlan = randomUUID();
+  await source`insert into personal_schedule_state(user_id,revision,preferences) values(${user},1,'{"workStart":"18:00","workEnd":"22:00","days":[1,2,3,4,5],"dailyMinutes":120,"blockMinutes":45,"bufferMinutes":15}'::jsonb)`;
+  await source`insert into personal_schedule_events(id,user_id,title,start_at,end_at,fingerprint,source) values(${personalEvent},${user},'私有课程','2026-10-12 08:00+08','2026-10-12 09:40+08','restore-synthetic','manual')`;
+  await source`insert into personal_schedule_requests(user_id,operation,request_id,request_hash,result) values(${user},'events.import',${randomUUID()},'restore-synthetic','{"added":1,"skipped":0,"revision":1}'::jsonb)`;
+  await source`insert into personal_work_plans(id,user_id,project_id,start_date,end_date,goal,mode,snapshot_hash,schedule_revision,input,items,unmet,warnings,expires_at) values(${personalPlan},${user},${project},'2026-10-12','2026-10-18','恢复个人安排','rules','synthetic',1,${JSON.stringify({ requestId: randomUUID(), startDate: "2026-10-12", days: 7, mode: "rules", goal: "恢复个人安排", selections: [{ taskId: task, minutes: 60 }] })}::jsonb,'[]'::jsonb,'[]'::jsonb,'[]'::jsonb,now()+interval '1 day')`;
   tables.push(
-    "project_creation_requests",
-    "project_lead_changes",
-    "project_references",
+    "personal_schedule_state",
+    "personal_schedule_events",
+    "personal_schedule_requests",
+    "personal_work_plans",
   );
   pg("pg_dump", ["-d", sourceName, "-Fc", "-f", dump]);
   pg("pg_restore", ["-d", restoredName, "--exit-on-error", "--no-owner", dump]);
@@ -184,6 +196,9 @@ try {
   const [savedReference] =
     await target`update project_references set revision=revision+1,note='恢复后可修改' where id=${reference} returning revision`;
   assert.equal(savedReference.revision, 2);
+  const [savedPersonal] =
+    await target`update personal_schedule_events set revision=revision+1,title='恢复后仍属本人' where id=${personalEvent} returning revision`;
+  assert.equal(savedPersonal.revision, 2);
   await migrate(drizzle(target), { migrationsFolder: "drizzle" });
   const [ledger] =
     await target`select count(*)::int as total from drizzle.__drizzle_migrations`;
@@ -202,9 +217,10 @@ try {
     migrationLedger: ledger.total,
     postRestoreWrite: true,
     migrationReplay: true,
-    upgradedFrom: "0011",
+    upgradedFrom: "0012",
     legacyDataPreserved: true,
     p3PostRestoreWrite: true,
+    personalSchedulePostRestoreWrite: true,
   };
   fs.writeFileSync(
     path.join(folder, "recovery.json"),

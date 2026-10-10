@@ -56,6 +56,7 @@ export default async function AppLayout({
             <span className="hidden max-w-40 truncate sm:inline">{session.user.name}</span>
           </summary>
           <div className="absolute right-0 z-30 mt-1 w-40 space-y-1 rounded-field border border-line bg-surface p-1 shadow-pop">
+            <Link href="/schedule" className="block rounded px-3 py-2 text-sm text-ink-soft transition-colors hover:bg-primary-soft hover:text-primary">我的课表与日程</Link>
             <Link
               href="/settings"
               className="block rounded px-3 py-2 text-sm text-ink-soft transition-colors hover:bg-primary-soft hover:text-primary"
