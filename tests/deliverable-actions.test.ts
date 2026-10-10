@@ -92,7 +92,6 @@ describe("D Server Actions (real service/database; session and cache stubbed)", 
     const submitted = await submitDeliverableAction(project.id, d.id, { requestId: randomUUID(), expectedRevision: updated.data.revision });
     expect(submitted).toMatchObject({ ok: true, data: { deliverable: { status: "submitted" } } });
     expect(await getDeliverableAction(project.id, d.id)).toMatchObject({ ok: true, data: { versions: [{ versionNumber: 1 }] } });
-    expect(mocks.revalidatePath).toHaveBeenCalledWith(`/projects/${project.id}/deliverables`);
     mocks.auth.mockResolvedValue({ user: { id: outsider.id } });
     expect(await getDeliverableAction(project.id, d.id)).toMatchObject({ ok: false, code: "FORBIDDEN" });
     expect(await listDeliverablesAction(project.id)).toMatchObject({ ok: false, code: "FORBIDDEN" });

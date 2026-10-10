@@ -27,8 +27,7 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
  * 新页面统一读 `ok`；`ok === false` 时 `code` 可判别、`error` 可直接展示。
  */
 export type Result<T> =
-  | { ok: true; data: T }
-  | { ok: false; code: ErrorCode; error: string };
+  { ok: true; data: T } | { ok: false; code: ErrorCode; error: string };
 
 /* ------------------------------------------------------------------ *
  * 分页
@@ -112,7 +111,11 @@ export type TaskStatusValue = (typeof TASK_STATUS_VALUES)[number];
 export const TASK_PRIORITY_VALUES = ["low", "medium", "high"] as const;
 export type TaskPriorityValue = (typeof TASK_PRIORITY_VALUES)[number];
 
-export const ITERATION_STATUS_VALUES = ["planned", "active", "completed"] as const;
+export const ITERATION_STATUS_VALUES = [
+  "planned",
+  "active",
+  "completed",
+] as const;
 export type IterationStatusValue = (typeof ITERATION_STATUS_VALUES)[number];
 
 /* ------------------------------------------------------------------ *
@@ -161,7 +164,11 @@ export type SubtaskProgress = {
 /** C-T07：批量入口一次最多接受多少个父任务。 */
 export const SUBTASK_PROGRESS_MAX_PARENTS = 100;
 
-export type TaskAllowedActions = { edit: boolean; delete: boolean; comment: boolean };
+export type TaskAllowedActions = {
+  edit: boolean;
+  delete: boolean;
+  comment: boolean;
+};
 
 /** 侧边栏一次取回的聚合数据。对应固定服务 getTaskPanelData(actorId, projectId, taskId)。 */
 export type TaskPanelData = {
@@ -201,7 +208,11 @@ export type Iteration = {
   completedAt: string | null;
 };
 
-export type IterationStats = { taskTotal: number; doneCount: number; doneRatio: number };
+export type IterationStats = {
+  taskTotal: number;
+  doneCount: number;
+  doneRatio: number;
+};
 
 /** 当前迭代 = active 那一轮 + 主任务口径统计。无 active 轮时返回 null。 */
 export type CurrentIteration = Iteration & {
@@ -243,7 +254,9 @@ export type IterationDetail = {
   retrospective: Retrospective | null;
 };
 
-export type IterationListFilters = PageInput & { status?: IterationStatusValue };
+export type IterationListFilters = PageInput & {
+  status?: IterationStatusValue;
+};
 
 /* ------------------------------------------------------------------ *
  * C · 动作输入 / 成功载荷（定稿 3.4 / 9.2 / 9.3）
@@ -285,7 +298,10 @@ export type UpdateTaskV1Input = {
   patch: UpdateTaskV1Patch;
 };
 
-export type DeleteTaskV1Input = { requestId: string; expectedUpdatedAt: string };
+export type DeleteTaskV1Input = {
+  requestId: string;
+  expectedUpdatedAt: string;
+};
 
 export type TaskV1Result = { task: TaskSummary };
 export type DeleteTaskV1Result = { taskId: string; deleted: true };
@@ -299,7 +315,11 @@ export type ReorderBacklogInput = {
   expectedUpdatedAt: string;
 };
 
-export type ReorderBacklogResult = { taskId: string; sortOrder: number; updatedAt: string };
+export type ReorderBacklogResult = {
+  taskId: string;
+  sortOrder: number;
+  updatedAt: string;
+};
 
 /** 入轮/移出时对每个任务的版本要求。 */
 export type IterationTaskRef = { taskId: string; expectedUpdatedAt: string };
@@ -331,7 +351,10 @@ export type UpdateIterationInput = {
   endDate?: string;
 };
 
-export type IterationRevisionInput = { requestId: string; expectedRevision: number };
+export type IterationRevisionInput = {
+  requestId: string;
+  expectedRevision: number;
+};
 
 /* --- 结束迭代、不可变历史与复盘（P1） --- */
 
@@ -413,7 +436,10 @@ export type SaveRetrospectiveInput = {
 export type SaveRetrospectiveResult = Retrospective;
 
 /** C-I11：删除尚未开始的迭代，关联任务退回任务池，任务本身不删。 */
-export type DeletePlannedIterationResult = { deleted: true; iterationId: string };
+export type DeletePlannedIterationResult = {
+  deleted: true;
+  iterationId: string;
+};
 
 /* --- 我的活跃迭代（C-I13 / A 跨项目工作台） --- */
 
@@ -613,7 +639,9 @@ export type ActivityFilters = PageInput & {
  * 第 9.4 节 E-A02 返回 = 分页结果加覆盖说明。
  * coverage 说明「从什么时候起有可核验的记录」，不用空历史冒充完整。
  */
-export type ActivityPage = PageResult<ActivityItem> & { coverage: QueryCoverage };
+export type ActivityPage = PageResult<ActivityItem> & {
+  coverage: QueryCoverage;
+};
 
 /**
  * 第 9.4 节事件目录的固定 type。调用方照此写，不让消费方猜字符串。
@@ -662,10 +690,7 @@ export type AnnouncementItem = {
 /** 第 9.6 节 E-K01：单条透明风险。规则、阈值、观察值都可解释，不做黑盒评分。 */
 export type RiskItem = {
   ruleId:
-    | "overdue_task"
-    | "blocked_task"
-    | "iteration_progress"
-    | "inactive_project";
+    "overdue_task" | "blocked_task" | "iteration_progress" | "inactive_project";
   severity: "warning";
   message: string;
   threshold: Record<string, number | string>;
@@ -704,13 +729,91 @@ export type TeacherProjectOverview = {
   asOf: string;
 };
 export type NotificationItem = {
-  id: string; eventKey: string; recipientId: string; projectId: string;
-  type: string; title: string; summary: string | null; sourceRef: SourceRef;
-  createdAt: string; readAt: string | null;
+  id: string;
+  eventKey: string;
+  recipientId: string;
+  projectId: string;
+  type: string;
+  title: string;
+  summary: string | null;
+  sourceRef: SourceRef;
+  createdAt: string;
+  readAt: string | null;
 };
-export type NotificationFilters = PageInput & { unreadOnly?: boolean; projectId?: string };
-export type MarkAllNotificationsInput = { requestId: string; beforeCreatedAt: string; projectId?: string };
+export type NotificationFilters = PageInput & {
+  unreadOnly?: boolean;
+  projectId?: string;
+};
+export type MarkAllNotificationsInput = {
+  requestId: string;
+  beforeCreatedAt: string;
+  projectId?: string;
+};
 export type RecordNotificationIntentInput = {
-  eventKey: string; projectId: string; actorId: string; type: string;
-  recipientIds: string[]; sourceRef: SourceRef; summary: string;
+  eventKey: string;
+  projectId: string;
+  actorId: string;
+  type: string;
+  recipientIds: string[];
+  sourceRef: SourceRef;
+  summary: string;
+};
+export type EvidenceItem = {
+  evidenceKey: string;
+  kind:
+    | "task_activity"
+    | "iteration_history"
+    | "comment"
+    | "deliverable_submission"
+    | "deliverable_review"
+    | "milestone_feedback"
+    | "retrospective";
+  projectId: string;
+  objectId: string;
+  iterationId?: string | null;
+  milestoneId?: string | null;
+  title: string;
+  summary: string;
+  occurredAt: string;
+  identities: {
+    userId: string;
+    role: "actor" | "assignee" | "submitter" | "reviewer" | "author";
+  }[];
+  sourceRef: SourceRef;
+};
+export type EvidenceFilters = PageInput & {
+  fromDate?: string;
+  toDate?: string;
+  milestoneId?: string;
+  iterationId?: string;
+  memberId?: string;
+  memberRole?: EvidenceItem["identities"][number]["role"];
+  kinds?: EvidenceItem["kind"][];
+};
+export type ReportFact = {
+  factKey: string;
+  title: string;
+  summary: string;
+  occurredAt: string | null;
+  sourceRefs: SourceRef[];
+};
+export type WeeklyReport = {
+  projectId: string;
+  weekStart: string;
+  weekEnd: string;
+  asOf: string;
+  coverage: QueryCoverage;
+  sections: Record<
+    | "createdTasks"
+    | "completionEvents"
+    | "reopenedTasks"
+    | "currentDoing"
+    | "overdue"
+    | "blocked"
+    | "activeIteration"
+    | "deliverables"
+    | "feedback"
+    | "scheduledNextSteps",
+    ReportFact[]
+  >;
 };

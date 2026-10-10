@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { NotificationDeliveryError } from "./notification-delivery-error";
 // 飞书斥候：自建应用 API 封装。所有请求以 FEISHU_BASE_URL 为 base。
 // 端点基于飞书开放平台标准；实现前以官方文档核验路径与字段。
 
@@ -16,17 +17,28 @@ let tokenCache: { token: string; expiresAt: number } | null = null;
 export async function getTenantAccessToken(): Promise<string> {
   if (tokenCache && Date.now() < tokenCache.expiresAt) return tokenCache.token;
 
-  const res = await fetch(`${BASE()}/open-apis/auth/v3/tenant_access_token/internal`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      app_id: requireEnv("FEISHU_APP_ID"),
-      app_secret: requireEnv("FEISHU_APP_SECRET"),
-    }),
-  });
-  const data = (await res.json()) as { code: number; tenant_access_token?: string; expire?: number; msg?: string };
+  const res = await fetch(
+    `${BASE()}/open-apis/auth/v3/tenant_access_token/internal`,
+    {
+      signal: AbortSignal.timeout(10000),
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        app_id: requireEnv("FEISHU_APP_ID"),
+        app_secret: requireEnv("FEISHU_APP_SECRET"),
+      }),
+    },
+  );
+  const data = (await res.json()) as {
+    code: number;
+    tenant_access_token?: string;
+    expire?: number;
+    msg?: string;
+  };
   if (data.code !== 0 || !data.tenant_access_token) {
-    throw new Error(`[feishu] 取 tenant_access_token 失败：${data.code} ${data.msg ?? ""}`);
+    throw new Error(
+      `[feishu] 取 tenant_access_token 失败：${data.code} ${data.msg ?? ""}`,
+    );
   }
   tokenCache = {
     token: data.tenant_access_token,
@@ -37,7 +49,9 @@ export async function getTenantAccessToken(): Promise<string> {
 
 // OAuth：授权码 → 用户身份。v2 token 端点直接用 client_id/secret 换 user_access_token，
 // 再取用户信息拿 open_id。redirect_uri 须与授权发起时一致。
-export async function exchangeOAuthCode(code: string): Promise<{ openId: string; name: string }> {
+export async function exchangeOAuthCode(
+  code: string,
+): Promise<{ openId: string; name: string }> {
   const tokenRes = await fetch(`${BASE()}/open-apis/authen/v2/oauth/token`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -49,15 +63,25 @@ export async function exchangeOAuthCode(code: string): Promise<{ openId: string;
       redirect_uri: requireEnv("FEISHU_REDIRECT_URI"),
     }),
   });
-  const tokenData = (await tokenRes.json()) as { code?: number; access_token?: string; msg?: string };
+  const tokenData = (await tokenRes.json()) as {
+    code?: number;
+    access_token?: string;
+    msg?: string;
+  };
   if (!tokenData.access_token) {
-    throw new Error(`[feishu] OAuth 换 token 失败：${tokenData.code} ${tokenData.msg ?? ""}`);
+    throw new Error(
+      `[feishu] OAuth 换 token 失败：${tokenData.code} ${tokenData.msg ?? ""}`,
+    );
   }
 
   const infoRes = await fetch(`${BASE()}/open-apis/authen/v1/user_info`, {
     headers: { authorization: `Bearer ${tokenData.access_token}` },
   });
-  const info = (await infoRes.json()) as { code: number; data?: { open_id: string; name: string }; msg?: string };
+  const info = (await infoRes.json()) as {
+    code: number;
+    data?: { open_id: string; name: string };
+    msg?: string;
+  };
   if (info.code !== 0 || !info.data) {
     throw new Error(`[feishu] 取用户信息失败：${info.code} ${info.msg ?? ""}`);
   }
@@ -65,31 +89,45 @@ export async function exchangeOAuthCode(code: string): Promise<{ openId: string;
 }
 
 // 发文本私信。content 须为 JSON 字符串（飞书要求）。
-export async function sendTextMessage(openId: string, text: string): Promise<void> {
+export async function sendTextMessage(
+  openId: string,
+  text: string,
+): Promise<void> {
   const token = await getTenantAccessToken();
-  const res = await fetch(`${BASE()}/open-apis/im/v1/messages?receive_id_type=open_id`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-    body: JSON.stringify({
-      receive_id: openId,
-      msg_type: "text",
-      content: JSON.stringify({ text }),
-    }),
-  });
+  const res = await fetch(
+    `${BASE()}/open-apis/im/v1/messages?receive_id_type=open_id`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        receive_id: openId,
+        msg_type: "text",
+        content: JSON.stringify({ text }),
+      }),
+    },
+  );
   const data = (await res.json()) as { code: number; msg?: string };
-  if (data.code !== 0) throw new Error(`[feishu] 发消息失败：${data.code} ${data.msg ?? ""}`);
+  if (data.code !== 0)
+    throw new Error(`[feishu] 发消息失败：${data.code} ${data.msg ?? ""}`);
 }
 
 // jsapi_ticket 内存缓存（仿 tenant_access_token），留 300s 安全余量。
 let ticketCache: { ticket: string; expiresAt: number } | null = null;
 
 export async function getJsapiTicket(): Promise<string> {
-  if (ticketCache && Date.now() < ticketCache.expiresAt) return ticketCache.ticket;
+  if (ticketCache && Date.now() < ticketCache.expiresAt)
+    return ticketCache.ticket;
 
   const token = await getTenantAccessToken();
   const res = await fetch(`${BASE()}/open-apis/jssdk/ticket/get`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify({}),
   });
   const data = (await res.json()) as {
@@ -98,7 +136,9 @@ export async function getJsapiTicket(): Promise<string> {
     msg?: string;
   };
   if (data.code !== 0 || !data.data) {
-    throw new Error(`[feishu] 取 jsapi_ticket 失败：${data.code} ${data.msg ?? ""}`);
+    throw new Error(
+      `[feishu] 取 jsapi_ticket 失败：${data.code} ${data.msg ?? ""}`,
+    );
   }
   ticketCache = {
     ticket: data.data.ticket,
@@ -119,17 +159,45 @@ export function buildJsapiSignature(input: {
 }
 
 // 发 interactive 卡片私信。card 为飞书卡片 JSON 对象，content 须序列化为字符串。
-export async function sendCardMessage(openId: string, card: unknown): Promise<void> {
-  const token = await getTenantAccessToken();
-  const res = await fetch(`${BASE()}/open-apis/im/v1/messages?receive_id_type=open_id`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-    body: JSON.stringify({
-      receive_id: openId,
-      msg_type: "interactive",
-      content: JSON.stringify(card),
-    }),
-  });
-  const data = (await res.json()) as { code: number; msg?: string };
-  if (data.code !== 0) throw new Error(`[feishu] 发卡片失败：${data.code} ${data.msg ?? ""}`);
+export async function sendCardMessage(
+  openId: string,
+  card: unknown,
+): Promise<void> {
+  let token: string;
+  try {
+    token = await getTenantAccessToken();
+  } catch {
+    throw new NotificationDeliveryError("rejected", "AUTH_FAILED");
+  }
+  let res: Response;
+  try {
+    res = await fetch(
+      `${BASE()}/open-apis/im/v1/messages?receive_id_type=open_id`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          receive_id: openId,
+          msg_type: "interactive",
+          content: JSON.stringify(card),
+        }),
+        signal: AbortSignal.timeout(15000),
+      },
+    );
+  } catch {
+    throw new NotificationDeliveryError("uncertain", "NETWORK_RESULT_UNKNOWN");
+  }
+  let data: { code?: number };
+  try {
+    data = await res.json();
+  } catch {
+    throw new NotificationDeliveryError("uncertain", "RESPONSE_UNREADABLE");
+  }
+  if (data.code === 0 && res.ok) return;
+  if (typeof data.code === "number" && data.code !== 0)
+    throw new NotificationDeliveryError("rejected", `PROVIDER_${data.code}`);
+  throw new NotificationDeliveryError("uncertain", "HTTP_RESULT_UNKNOWN");
 }

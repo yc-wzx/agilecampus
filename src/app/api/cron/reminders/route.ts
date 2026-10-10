@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { scanAndNotifyDue } from "@/lib/notify";
+import { scanAndRecordDueReminders } from "@/lib/notification-reminders";
+import { dispatchExternalNotifications } from "@/lib/notification";
 import { dispatchDeliverableEvents } from "@/lib/deliverable-events";
 import { handleDeliverableEvent } from "@/lib/deliverable-sink";
 
@@ -7,15 +8,25 @@ import { handleDeliverableEvent } from "@/lib/deliverable-sink";
 export async function POST(req: Request) {
   const secret = process.env.CRON_SECRET;
   const header = req.headers.get("authorization");
-  const provided = header ? /^Bearer\s+(.+)$/i.exec(header.trim())?.[1]?.trim() : null;
+  const provided = header
+    ? /^Bearer\s+(.+)$/i.exec(header.trim())?.[1]?.trim()
+    : null;
   if (!secret || provided !== secret) {
     return NextResponse.json({ error: "未授权" }, { status: 401 });
   }
 
   try {
     const outbox = await dispatchDeliverableEvents(handleDeliverableEvent);
-    const result = await scanAndNotifyDue();
-    return NextResponse.json({ ...result, outboxDelivered: outbox.delivered, outboxFailed: outbox.failed });
+    const reminders = await scanAndRecordDueReminders();
+    const external = await dispatchExternalNotifications();
+    return NextResponse.json({
+      notified: external.sent,
+      tasksScanned: reminders.scanned,
+      reminders,
+      external,
+      outboxDelivered: outbox.delivered,
+      outboxFailed: outbox.failed,
+    });
   } catch (e) {
     console.error("[/api/cron/reminders]", e);
     return NextResponse.json({ error: "服务器错误" }, { status: 500 });

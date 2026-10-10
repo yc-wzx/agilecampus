@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useRef, useState } from "react";
+
 import {
   createDeliverableDraftAction,
   updateDeliverableDraftAction,
@@ -83,11 +83,12 @@ export function DeliverableEditor({
   });
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [formError, setFormError] = useState("");
-  const [pending, startTransition] = useTransition();
+  const [pending, setPending] = useState(false);
   // locked 防双击；request 保证同一次保存（含网络重试）复用同一 requestId
   const locked = useRef(false);
   const request = useRef(requestId);
-  const router = useRouter();
+  // Keep the editor mounted while its action returns; only our confirmed save advances the baseline.
+  const savedRevision = useRef(revision);
 
   function update<K extends keyof Content>(key: K, value: Content[K]) {
     setValues((previous) => ({ ...previous, [key]: value }));
@@ -113,12 +114,13 @@ export function DeliverableEditor({
 
         locked.current = true;
         setFormError("");
-        startTransition(async () => {
+        setPending(true);
+        void (async () => {
           try {
             const result = deliverableId
               ? await updateDeliverableDraftAction(projectId, deliverableId, {
                   ...values,
-                  expectedRevision: revision!,
+                  expectedRevision: savedRevision.current!,
                 })
               : await createDeliverableDraftAction(projectId, {
                   ...values,
@@ -130,16 +132,22 @@ export function DeliverableEditor({
               setFormError(result.error);
               return;
             }
+            savedRevision.current = result.data.revision;
             // Action 已重新验证并返回当前页；只在新建时导航，避免重复刷新竞态。
-            if (!deliverableId) router.push(`/projects/${projectId}/deliverables/${result.data.id}`);
+            if (!deliverableId)
+              window.location.assign(
+                `/projects/${projectId}/deliverables/${result.data.id}`,
+              );
+            else window.location.reload();
           } catch {
             setFormError(
               "未能确认保存结果，请保持当前内容并重试；如提示冲突，请刷新核对。",
             );
           } finally {
             locked.current = false;
+            setPending(false);
           }
-        });
+        })();
       }}
     >
       <fieldset disabled={pending} className="space-y-4">
@@ -262,7 +270,9 @@ export function DeliverableEditor({
           </select>
           {values.milestoneId &&
             !milestones.some((m) => m.id === values.milestoneId) && (
-              <p className="text-xs text-high">原里程碑已不可用，请重新选择。</p>
+              <p className="text-xs text-high">
+                原里程碑已不可用，请重新选择。
+              </p>
             )}
         </div>
 

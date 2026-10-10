@@ -35,7 +35,8 @@ const paging = {
 
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
-  if (!result.success) throw new ValidationError(result.error.issues[0].message);
+  if (!result.success)
+    throw new ValidationError(result.error.issues[0].message);
   return result.data;
 }
 
@@ -45,7 +46,14 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
  * 免得后来人顺手把不该留的正文塞进去。新增类型时先在这里登记。
  */
 const METADATA_KEYS: Record<string, readonly string[]> = {
-  "task.created": ["taskId", "changedFields", "status", "assigneeId", "dueDate", "iterationId"],
+  "task.created": [
+    "taskId",
+    "changedFields",
+    "status",
+    "assigneeId",
+    "dueDate",
+    "iterationId",
+  ],
   "task.updated": [
     "taskId",
     "changedFields",
@@ -63,26 +71,60 @@ const METADATA_KEYS: Record<string, readonly string[]> = {
   "task.blocked": ["taskId", "blockedReasonLength"],
   "task.unblocked": ["taskId"],
   "iteration.started": ["iterationId"],
-  "iteration.completed": ["iterationId", "historyId", "taskTotal", "doneCount", "doneRatio"],
+  "iteration.completed": [
+    "iterationId",
+    "historyId",
+    "taskTotal",
+    "doneCount",
+    "doneRatio",
+  ],
   "retrospective.saved": ["iterationId", "retrospectiveId", "revision"],
+  "comment.created": ["taskId", "commentId", "mentionedUserIds", "revision"],
+  "comment.updated": ["taskId", "commentId", "mentionedUserIds", "revision"],
+  "comment.deleted": ["taskId", "commentId", "mentionedUserIds", "revision"],
+  "announcement.published": ["announcementId", "revision"],
+  "announcement.withdrawn": ["announcementId", "revision"],
   // D 的事件经 §8 的 sink 映射进来
   "deliverable.submitted": ["deliverableId", "versionId"],
-  "deliverable.approved": ["deliverableId", "versionId", "feedbackId", "decision"],
-  "deliverable.changes_requested": ["deliverableId", "versionId", "feedbackId", "decision"],
+  "deliverable.approved": [
+    "deliverableId",
+    "versionId",
+    "feedbackId",
+    "decision",
+  ],
+  "deliverable.changes_requested": [
+    "deliverableId",
+    "versionId",
+    "feedbackId",
+    "decision",
+  ],
   "milestone.feedback": ["milestoneId", "feedbackId"],
   "feedback.task_created": ["feedbackId", "taskId"],
 };
 
-function assertMetadataAllowed(type: string, metadata: Record<string, unknown> | undefined) {
+function assertMetadataAllowed(
+  type: string,
+  metadata: Record<string, unknown> | undefined,
+) {
   const keys = Object.keys(metadata ?? {});
   if (keys.length === 0) return;
   const allowed = METADATA_KEYS[type];
   if (!allowed) {
-    throw new ValidationError(`活动类型 ${type} 尚未登记 metadata 白名单，不能携带额外信息`);
+    throw new ValidationError(
+      `活动类型 ${type} 尚未登记 metadata 白名单，不能携带额外信息`,
+    );
   }
-  const unknown = keys.filter((key) => !allowed.includes(key));
+  const historicalFields =
+    type.startsWith("task.") || type.startsWith("comment.")
+      ? ["iterationId", "milestoneId", "assigneeId"]
+      : [];
+  const unknown = keys.filter(
+    (key) => !allowed.includes(key) && !historicalFields.includes(key),
+  );
   if (unknown.length > 0) {
-    throw new ValidationError(`活动 ${type} 的 metadata 含未允许字段：${unknown.join("、")}`);
+    throw new ValidationError(
+      `活动 ${type} 的 metadata 含未允许字段：${unknown.join("、")}`,
+    );
   }
 }
 
@@ -99,7 +141,13 @@ const recordSchema = z
     metadata: z
       .record(
         z.string(),
-        z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(z.string())]),
+        z.union([
+          z.string(),
+          z.number(),
+          z.boolean(),
+          z.null(),
+          z.array(z.string()),
+        ]),
       )
       .optional(),
   })
@@ -169,7 +217,9 @@ export function computeActivityCoverageFromMin(
     };
   }
   // 同为 ISO UTC 字符串，字典序即时间序
-  const windowStart = fromDate ? new Date(`${fromDate}T00:00:00+08:00`).toISOString() : null;
+  const windowStart = fromDate
+    ? new Date(`${fromDate}T00:00:00+08:00`).toISOString()
+    : null;
   return {
     availableFrom: minIso,
     complete: windowStart !== null && windowStart >= minIso,
@@ -181,11 +231,17 @@ function currentMember(actorId: string) {
   return sql`exists (select 1 from ${projects} p join ${teamMembers} m on m.team_id = p.team_id
     where p.id = ${projectActivities.projectId} and m.user_id = ${actorId})`;
 }
-async function activityCoverage(actorId: string, projectId: string, fromDate?: string): Promise<QueryCoverage> {
+async function activityCoverage(
+  actorId: string,
+  projectId: string,
+  fromDate?: string,
+): Promise<QueryCoverage> {
   const [row] = await db
     .select({ min: sql<Date | null>`min(${projectActivities.occurredAt})` })
     .from(projectActivities)
-    .where(and(eq(projectActivities.projectId, projectId), currentMember(actorId)));
+    .where(
+      and(eq(projectActivities.projectId, projectId), currentMember(actorId)),
+    );
   const minIso = row?.min ? new Date(row.min).toISOString() : null;
   return computeActivityCoverageFromMin(minIso, fromDate);
 }
@@ -232,7 +288,11 @@ export async function recordProjectActivity(
     .from(projectActivities)
     .where(eq(projectActivities.eventKey, data.eventKey));
   if (!existing) throw new ConflictError("活动事件正在写入，请重试");
-  if (existing.projectId !== data.projectId || existing.actorId !== data.actorId || existing.type !== data.type) {
+  if (
+    existing.projectId !== data.projectId ||
+    existing.actorId !== data.actorId ||
+    existing.type !== data.type
+  ) {
     throw new ConflictError("活动事件标识已用于其他业务");
   }
   return toActivityItem(existing);
@@ -264,15 +324,23 @@ export async function listProjectActivities(
   const where = and(
     eq(projectActivities.projectId, projectId),
     currentMember(actorId),
-    data.objectType ? eq(projectActivities.objectType, data.objectType) : undefined,
+    data.objectType
+      ? eq(projectActivities.objectType, data.objectType)
+      : undefined,
     data.objectId ? eq(projectActivities.objectId, data.objectId) : undefined,
     data.actorId ? eq(projectActivities.actorId, data.actorId) : undefined,
     // 北京时间：起始日包含、结束日不包含。中国无夏令时，固定 +08:00 即可。
     data.fromDate
-      ? gte(projectActivities.occurredAt, new Date(`${data.fromDate}T00:00:00+08:00`))
+      ? gte(
+          projectActivities.occurredAt,
+          new Date(`${data.fromDate}T00:00:00+08:00`),
+        )
       : undefined,
     data.toDate
-      ? lt(projectActivities.occurredAt, new Date(`${data.toDate}T00:00:00+08:00`))
+      ? lt(
+          projectActivities.occurredAt,
+          new Date(`${data.toDate}T00:00:00+08:00`),
+        )
       : undefined,
   );
 
@@ -316,7 +384,11 @@ export async function getActivityEvidence(
     .select()
     .from(projectActivities)
     .where(
-      and(eq(projectActivities.id, activityId), eq(projectActivities.projectId, projectId), currentMember(actorId)),
+      and(
+        eq(projectActivities.id, activityId),
+        eq(projectActivities.projectId, projectId),
+        currentMember(actorId),
+      ),
     );
   if (!row) throw new NotFoundError("活动不存在");
   return toActivityItem(row);

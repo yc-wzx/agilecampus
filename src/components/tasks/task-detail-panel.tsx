@@ -1,7 +1,11 @@
 "use client";
 
 import { useActionState, useEffect, useRef, useState } from "react";
-import type { TaskPriorityValue, TaskPanelData, TaskStatusValue } from "@/contracts/p0-p2";
+import type {
+  TaskPriorityValue,
+  TaskPanelData,
+  TaskStatusValue,
+} from "@/contracts/p0-p2";
 import {
   updateTaskAction,
   type UpdateTaskState,
@@ -14,6 +18,7 @@ import {
 } from "@/app/(app)/projects/[projectId]/tasks/actions";
 import type { TaskSummary } from "@/contracts/p0-p2";
 import { newRequestId } from "@/lib/request-id";
+import { TaskComments } from "@/components/task-comments";
 
 // C / P0：任务详情侧边栏。取代原先卡片里的居中弹窗 EditModal。
 //
@@ -185,7 +190,9 @@ export function TaskDetailPanel({
       if (res.code === "CONFLICT") refetch();
       return;
     }
-    setLocal((current) => (current ? { ...current, task: res.data.task } : current));
+    setLocal((current) =>
+      current ? { ...current, task: res.data.task } : current,
+    );
     // 只有这里——服务端确认成功之后——才通知外部
     onSaved?.();
   }
@@ -250,13 +257,19 @@ export function TaskDetailPanel({
         {state.error && (
           <div className="space-y-2">
             <p className="text-sm text-high">{state.error}</p>
-            <button type="button" onClick={refetch} className="ac-btn-ghost text-sm">
+            <button
+              type="button"
+              onClick={refetch}
+              className="ac-btn-ghost text-sm"
+            >
               重试
             </button>
           </div>
         )}
 
-        {!state.error && !state.data && <p className="text-sm text-ink-faint">载入任务详情…</p>}
+        {!state.error && !state.data && (
+          <p className="text-sm text-ink-faint">载入任务详情…</p>
+        )}
 
         {task && local && (
           <div className="space-y-5">
@@ -264,7 +277,10 @@ export function TaskDetailPanel({
               <Meta label="状态" value={STATUS_LABEL[task.status]} />
               <Meta label="优先级" value={task.priority} />
               <Meta label="负责人" value={task.assigneeName ?? "未分配"} />
-              <Meta label="所属迭代" value={task.iterationId ? "已入轮" : "未入轮"} />
+              <Meta
+                label="所属迭代"
+                value={task.iterationId ? "已入轮" : "未入轮"}
+              />
               <Meta label="起始日" value={task.startDate ?? "—"} />
               <Meta label="截止日" value={task.dueDate ?? "—"} />
             </dl>
@@ -272,7 +288,10 @@ export function TaskDetailPanel({
             {local.labels.length > 0 && (
               <div className="flex flex-wrap items-center gap-1">
                 {local.labels.map((l) => (
-                  <span key={l.id} className="ac-badge bg-surface text-ink-soft">
+                  <span
+                    key={l.id}
+                    className="ac-badge bg-surface text-ink-soft"
+                  >
                     {l.name}
                   </span>
                 ))}
@@ -280,7 +299,8 @@ export function TaskDetailPanel({
             )}
 
             <p className="text-xs text-ink-faint">
-              子任务 {local.subtaskProgress.doneCount}/{local.subtaskProgress.total}
+              子任务 {local.subtaskProgress.doneCount}/
+              {local.subtaskProgress.total}
               {local.subtaskProgress.ratio !== null &&
                 ` · ${Math.round(local.subtaskProgress.ratio * 100)}%`}
               {" · "}依赖 {local.dependencies.length} 条
@@ -295,7 +315,12 @@ export function TaskDetailPanel({
                 className="space-y-2.5 border-t border-line pt-4"
               >
                 <Field label="标题">
-                  <input name="title" defaultValue={task.title} required className="ac-field text-sm" />
+                  <input
+                    name="title"
+                    defaultValue={task.title}
+                    required
+                    className="ac-field text-sm"
+                  />
                 </Field>
                 <Field label="描述">
                   <textarea
@@ -327,21 +352,33 @@ export function TaskDetailPanel({
 
                 <div className="grid grid-cols-2 gap-2.5">
                   <Field label="状态">
-                    <select name="status" defaultValue={task.status} className="ac-field text-sm">
+                    <select
+                      name="status"
+                      defaultValue={task.status}
+                      className="ac-field text-sm"
+                    >
                       <option value="todo">待办</option>
                       <option value="doing">进行中</option>
                       <option value="done">已完成</option>
                     </select>
                   </Field>
                   <Field label="优先级">
-                    <select name="priority" defaultValue={task.priority} className="ac-field text-sm">
+                    <select
+                      name="priority"
+                      defaultValue={task.priority}
+                      className="ac-field text-sm"
+                    >
                       <option value="low">低</option>
                       <option value="medium">中</option>
                       <option value="high">高</option>
                     </select>
                   </Field>
                   <Field label="负责人">
-                    <select name="assigneeId" defaultValue={task.assigneeId ?? ""} className="ac-field text-sm">
+                    <select
+                      name="assigneeId"
+                      defaultValue={task.assigneeId ?? ""}
+                      className="ac-field text-sm"
+                    >
                       <option value="">未分配</option>
                       {members.map((m) => (
                         <option key={m.id} value={m.id}>
@@ -351,7 +388,11 @@ export function TaskDetailPanel({
                     </select>
                   </Field>
                   <Field label="里程碑">
-                    <select name="milestoneId" defaultValue={task.milestoneId ?? ""} className="ac-field text-sm">
+                    <select
+                      name="milestoneId"
+                      defaultValue={task.milestoneId ?? ""}
+                      className="ac-field text-sm"
+                    >
                       <option value="">无里程碑</option>
                       {milestones.map((m) => (
                         <option key={m.id} value={m.id}>
@@ -361,17 +402,31 @@ export function TaskDetailPanel({
                     </select>
                   </Field>
                   <Field label="起始日">
-                    <input type="date" name="startDate" defaultValue={task.startDate ?? ""} className="ac-field text-sm" />
+                    <input
+                      type="date"
+                      name="startDate"
+                      defaultValue={task.startDate ?? ""}
+                      className="ac-field text-sm"
+                    />
                   </Field>
                   <Field label="截止日">
-                    <input type="date" name="dueDate" defaultValue={task.dueDate ?? ""} className="ac-field text-sm" />
+                    <input
+                      type="date"
+                      name="dueDate"
+                      defaultValue={task.dueDate ?? ""}
+                      className="ac-field text-sm"
+                    />
                   </Field>
                 </div>
 
                 {saveError && <p className="text-sm text-high">{saveError}</p>}
 
                 <div className="flex items-center justify-end gap-2 pt-1">
-                  <button type="button" onClick={onClose} className="ac-btn-ghost">
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="ac-btn-ghost"
+                  >
                     关闭
                   </button>
                   <button disabled={saving} className="ac-btn">
@@ -381,11 +436,19 @@ export function TaskDetailPanel({
               </form>
             ) : (
               <div className="space-y-2 border-t border-line pt-4 text-sm">
-                <p className="whitespace-pre-wrap text-ink-soft">{task.description ?? "（无描述）"}</p>
+                <p className="whitespace-pre-wrap text-ink-soft">
+                  {task.description ?? "（无描述）"}
+                </p>
                 {task.acceptanceCriteria && (
-                  <p className="text-xs text-ink-soft">验收标准：{task.acceptanceCriteria}</p>
+                  <p className="text-xs text-ink-soft">
+                    验收标准：{task.acceptanceCriteria}
+                  </p>
                 )}
-                {!canWrite && <p className="text-xs text-ink-faint">你的角色只能查看任务。</p>}
+                {!canWrite && (
+                  <p className="text-xs text-ink-faint">
+                    你的角色只能查看任务。
+                  </p>
+                )}
               </div>
             )}
 
@@ -395,7 +458,9 @@ export function TaskDetailPanel({
                 taskId={task.id}
                 task={task}
                 onUpdated={(next) =>
-                  setLocal((current) => (current ? { ...current, task: next } : current))
+                  setLocal((current) =>
+                    current ? { ...current, task: next } : current,
+                  )
                 }
                 onReload={() => {
                   refetch();
@@ -412,10 +477,12 @@ export function TaskDetailPanel({
                   <div key={f.id} className="rounded-field bg-sunken p-2.5">
                     <p className="text-xs text-ink-faint">
                       {f.milestoneTitle ?? "成果反馈"} ·{" "}
-                      {f.decision === "changes_requested" ? "退回修改" : "通过"} ·{" "}
-                      {f.createdAt.slice(0, 10)}
+                      {f.decision === "changes_requested" ? "退回修改" : "通过"}{" "}
+                      · {f.createdAt.slice(0, 10)}
                     </p>
-                    <p className="mt-1 whitespace-pre-wrap text-sm text-ink-soft">{f.comment}</p>
+                    <p className="mt-1 whitespace-pre-wrap text-sm text-ink-soft">
+                      {f.comment}
+                    </p>
                   </div>
                 ))}
               </div>
@@ -436,7 +503,7 @@ export function TaskDetailPanel({
               />
             )}
 
-            {/* D 的来源反馈、E 的评论与活动接在这里；两者都还没交付，先留位不假装有。 */}
+            <TaskComments key={taskId} projectId={projectId} taskId={taskId} />
 
             {canWrite && local.allowedActions.delete && (
               <div className="border-t border-line pt-3">
@@ -568,10 +635,10 @@ function LabelDependencyForm({
   allTasks: { id: string; title: string }[];
   onSaved: () => void;
 }) {
-  const [state, formAction, pending] = useActionState<UpdateTaskState, FormData>(
-    updateTaskAction,
-    null,
-  );
+  const [state, formAction, pending] = useActionState<
+    UpdateTaskState,
+    FormData
+  >(updateTaskAction, null);
   const settled = state !== null;
   const notified = useRef(false);
 
@@ -645,7 +712,13 @@ function Meta({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <label className="block space-y-1">
       <span className="text-xs font-medium text-ink-soft">{label}</span>

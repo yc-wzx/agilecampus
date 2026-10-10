@@ -12,7 +12,11 @@ import { resetDb } from "./helpers";
 import type { QueryPart } from "@/contracts/p0-p2";
 
 async function makeUser(email: string) {
-  return createUser({ email, password: "password123", name: email.split("@")[0] });
+  return createUser({
+    email,
+    password: "password123",
+    name: email.split("@")[0],
+  });
 }
 
 // 常用布景：owner(admin) 建团队，student/teacher 加入，outsider 在野
@@ -49,7 +53,7 @@ describe("getProjectOverviewSummary (B-G01)", () => {
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  it("C/D/E 已交付的数据源是 ready；F 未交付的标为 unavailable 而不是 0", async () => {
+  it("C/D/E/F 已交付的数据源是 ready，没有置顶公告时返回真实 null", async () => {
     const { project, student, owner } = await scene();
     await createMilestone(owner.id, project.id, {
       title: "中期答辩",
@@ -76,14 +80,15 @@ describe("getProjectOverviewSummary (B-G01)", () => {
     expect(activities.coverage.availableFrom).toBeNull();
     expect(activities.coverage.complete).toBe(false);
 
-    // F（公告）仍未交付 → 显式不可用，页面据此显示“待接入”
-    expect(summary.pinnedAnnouncement.state).toBe("unavailable");
+    expect(summary.pinnedAnnouncement).toEqual({ state: "ready", data: null });
   });
 
   it("任务统计走 C 的主任务口径：子任务不计入总数（C-T08）", async () => {
     const { project, owner } = await scene();
     await createTask(owner.id, project.id, { title: "用户调研" });
-    const parent = await createTask(owner.id, project.id, { title: "竞品分析" });
+    const parent = await createTask(owner.id, project.id, {
+      title: "竞品分析",
+    });
     await createSubtask(owner.id, parent.id, { title: "访谈提纲" });
 
     const stats = ready(
@@ -123,7 +128,8 @@ describe("getProjectOverviewSummary (B-G01)", () => {
     });
 
     const planned = await getProjectOverviewSummary(owner.id, project.id);
-    if (planned.activeIteration.state !== "ready") throw new Error("期望 ready");
+    if (planned.activeIteration.state !== "ready")
+      throw new Error("期望 ready");
     expect(planned.activeIteration.data).toBeNull(); // planned 不是 active
 
     await startIteration(owner.id, project.id, iteration.id, {
@@ -150,7 +156,8 @@ describe("getProjectOverviewSummary (B-G01)", () => {
       requestId: randomUUID(),
     });
     const draftStats = ready(
-      (await getProjectOverviewSummary(student.id, project.id)).deliverableStats,
+      (await getProjectOverviewSummary(student.id, project.id))
+        .deliverableStats,
     );
     expect(draftStats.total).toBe(0);
     expect(draftStats.approvedRatio).toBeNull();
@@ -170,7 +177,8 @@ describe("getProjectOverviewSummary (B-G01)", () => {
     });
 
     const stats = ready(
-      (await getProjectOverviewSummary(student.id, project.id)).deliverableStats,
+      (await getProjectOverviewSummary(student.id, project.id))
+        .deliverableStats,
     );
     expect(stats.total).toBe(1);
     expect(stats.byStatus.submitted).toBe(1);

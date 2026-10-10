@@ -13,6 +13,10 @@ export type ProjectNavKey =
   | "tasks"
   | "iterations"
   | "deliverables"
+  | "announcements"
+  | "reports"
+  | "evidence"
+  | "ai"
   | "timeline";
 
 type NavItem = {
@@ -36,7 +40,36 @@ export function ProjectNav({
       href: `/projects/${projectId}/overview`,
       enabled: true,
     },
-    { key: "tasks", label: "任务", href: `/projects/${projectId}`, enabled: true },
+    {
+      key: "tasks",
+      label: "任务",
+      href: `/projects/${projectId}`,
+      enabled: true,
+    },
+    {
+      key: "announcements",
+      label: "公告",
+      href: `/projects/${projectId}/announcements`,
+      enabled: true,
+    },
+    {
+      key: "reports",
+      label: "周报",
+      href: `/projects/${projectId}/reports`,
+      enabled: true,
+    },
+    {
+      key: "evidence",
+      label: "证据",
+      href: `/projects/${projectId}/evidence/process`,
+      enabled: true,
+    },
+    {
+      key: "ai",
+      label: "助手",
+      href: `/projects/${projectId}/ai-drafts`,
+      enabled: true,
+    },
     {
       key: "iterations",
       label: "迭代",
@@ -58,7 +91,10 @@ export function ProjectNav({
   ];
 
   return (
-    <nav aria-label="项目内部导航" className="flex flex-wrap items-center gap-1.5">
+    <nav
+      aria-label="项目内部导航"
+      className="flex flex-wrap items-center gap-1.5"
+    >
       {items
         .filter((item) => item.enabled)
         .map((item) => {

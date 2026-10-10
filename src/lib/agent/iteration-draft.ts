@@ -17,9 +17,19 @@ import { ConflictError, ForbiddenError, NotFoundError } from "@/lib/errors";
 import { createIterationWithTasksTx } from "@/lib/iteration";
 import { getProjectForUser } from "@/lib/project";
 import { lockTaskWriteAccess } from "@/lib/task-write-access";
-import { claimWriteRequest, finishWriteRequest, hashRequest } from "@/lib/write-request";
+import {
+  claimWriteRequest,
+  finishWriteRequest,
+  hashRequest,
+} from "@/lib/write-request";
 import { requireTaskWrite } from "@/lib/task";
 import { listBacklog } from "@/lib/task-contract";
+export {
+  generateIterationDraft,
+  updateIterationDraft,
+  cancelIterationDraft,
+  listMyIterationDrafts,
+} from "./iteration-draft-management";
 
 // C / P2：AI 迭代草案的业务读取与事务确认（定稿 9.9 的 C-AI01、C-AI02）。
 //
@@ -53,7 +63,10 @@ function toDraftStatus(value: string): IterationDraft["status"] {
   return value as IterationDraft["status"];
 }
 
-function toIterationDraft(row: DraftRow, status: string): IterationDraft {
+export function toIterationDraft(
+  row: DraftRow,
+  status: string,
+): IterationDraft {
   return {
     id: row.id,
     projectId: row.projectId,
@@ -93,8 +106,14 @@ async function loadDraft(
   const [row] = await db
     .select()
     .from(iterationDrafts)
-    .where(and(eq(iterationDrafts.id, draftId), eq(iterationDrafts.projectId, projectId)));
-  if (!row || row.createdById !== actorId) throw new NotFoundError("草案不存在或无权访问");
+    .where(
+      and(
+        eq(iterationDrafts.id, draftId),
+        eq(iterationDrafts.projectId, projectId),
+      ),
+    );
+  if (!row || row.createdById !== actorId)
+    throw new NotFoundError("草案不存在或无权访问");
   return row;
 }
 
@@ -143,7 +162,12 @@ export async function previewIterationDraft(
         .where(and(eq(tasks.projectId, projectId), inArray(tasks.id, ids)))
     : [];
   const byId = new Map(rows.map((t) => [t.id, t]));
-  const baseline = new Map((row.candidateTasks as IterationDraftCandidateTask[]).map((c) => [c.taskId, c.expectedUpdatedAt]));
+  const baseline = new Map(
+    (row.candidateTasks as IterationDraftCandidateTask[]).map((c) => [
+      c.taskId,
+      c.expectedUpdatedAt,
+    ]),
+  );
 
   const conflicts: IterationDraftValidation["conflicts"] = [];
   const currentTaskVersions: IterationTaskVersion[] = [];
@@ -153,8 +177,14 @@ export async function previewIterationDraft(
       conflicts.push({ taskId, reason: "任务不存在或已被删除" });
       continue;
     }
-    if (new Date(baseline.get(taskId) ?? "").getTime() !== task.updatedAt.getTime()) {
-      conflicts.push({ taskId, reason: "任务在草案生成后已被修改，请更新或重新生成草案" });
+    if (
+      new Date(baseline.get(taskId) ?? "").getTime() !==
+      task.updatedAt.getTime()
+    ) {
+      conflicts.push({
+        taskId,
+        reason: "任务在草案生成后已被修改，请更新或重新生成草案",
+      });
     }
     if (task.status === "done") {
       conflicts.push({ taskId, reason: "任务已完成，不必再排进新一轮" });
@@ -163,12 +193,17 @@ export async function previewIterationDraft(
     } else if (task.parentTaskId !== null) {
       conflicts.push({ taskId, reason: "子任务跟随父任务入轮，不能单独选择" });
     }
-    currentTaskVersions.push({ taskId, updatedAt: task.updatedAt.toISOString() });
+    currentTaskVersions.push({
+      taskId,
+      updatedAt: task.updatedAt.toISOString(),
+    });
   }
 
   const draft = toIterationDraft(row, row.status);
   const draftLevelOk =
-    draft.status === "pending" && draft.name.trim().length > 0 && draft.startDate <= draft.endDate;
+    draft.status === "pending" &&
+    draft.name.trim().length > 0 &&
+    draft.startDate <= draft.endDate;
 
   return {
     draft,
@@ -198,10 +233,26 @@ export async function confirmIterationDraft(
     await lockTaskWriteAccess(tx, actorId, projectId);
     const { requestId, ...content } = input;
     const requestHash = hashRequest({ draftId, ...content });
-    const key = { projectId, actorId, operation: "iteration.confirm_draft", requestId };
+    const key = {
+      projectId,
+      actorId,
+      operation: "iteration.confirm_draft",
+      requestId,
+    };
     const claim = await claimWriteRequest(tx, key, requestHash);
-    if (claim.replay) return { ...(claim.result as ConfirmIterationDraftResult), replayed: true };
-    const result = await confirmInTx(tx, actorId, projectId, draftId, input, requestHash);
+    if (claim.replay)
+      return {
+        ...(claim.result as ConfirmIterationDraftResult),
+        replayed: true,
+      };
+    const result = await confirmInTx(
+      tx,
+      actorId,
+      projectId,
+      draftId,
+      input,
+      requestHash,
+    );
     return finishWriteRequest(tx, claim.id, result);
   });
 }
@@ -217,7 +268,12 @@ async function confirmInTx(
   const [row] = await tx
     .select()
     .from(iterationDrafts)
-    .where(and(eq(iterationDrafts.id, draftId), eq(iterationDrafts.projectId, projectId)))
+    .where(
+      and(
+        eq(iterationDrafts.id, draftId),
+        eq(iterationDrafts.projectId, projectId),
+      ),
+    )
     .for("update");
   if (!row) throw new NotFoundError("草案不存在");
 
@@ -231,14 +287,27 @@ async function confirmInTx(
     if (!row.confirmedIterationId) {
       throw new ConflictError("草案状态异常，请重新生成");
     }
-    const [original] = await tx.select({ result: writeRequests.result }).from(writeRequests).where(and(
-      eq(writeRequests.projectId, projectId), eq(writeRequests.actorId, actorId),
-      eq(writeRequests.operation, "iteration.confirm_draft"), eq(writeRequests.requestHash, requestHash), isNotNull(writeRequests.result),
-    ));
-    if (!original?.result) throw new ConflictError("草案已经确认，请查看原迭代");
-    return { ...(original.result as ConfirmIterationDraftResult), replayed: true };
+    const [original] = await tx
+      .select({ result: writeRequests.result })
+      .from(writeRequests)
+      .where(
+        and(
+          eq(writeRequests.projectId, projectId),
+          eq(writeRequests.actorId, actorId),
+          eq(writeRequests.operation, "iteration.confirm_draft"),
+          eq(writeRequests.requestHash, requestHash),
+          isNotNull(writeRequests.result),
+        ),
+      );
+    if (!original?.result)
+      throw new ConflictError("草案已经确认，请查看原迭代");
+    return {
+      ...(original.result as ConfirmIterationDraftResult),
+      replayed: true,
+    };
   }
-  if (row.status === "cancelled") throw new ConflictError("草案已取消，不能确认");
+  if (row.status === "cancelled")
+    throw new ConflictError("草案已取消，不能确认");
   // status 可能已经被预览落成 expired，也可能刚过期还没落——两种都算过期
   if (row.status === "expired" || isExpired(row)) {
     throw new ConflictError("草案已过期，请重新生成");
@@ -249,13 +318,25 @@ async function confirmInTx(
   }
 
   const ids = candidateIds(row);
-  const baseline = new Map((row.candidateTasks as IterationDraftCandidateTask[]).map((c) => [c.taskId, c.expectedUpdatedAt]));
+  const baseline = new Map(
+    (row.candidateTasks as IterationDraftCandidateTask[]).map((c) => [
+      c.taskId,
+      c.expectedUpdatedAt,
+    ]),
+  );
   for (const version of input.expectedTaskVersions) {
-    if (new Date(baseline.get(version.taskId) ?? "").getTime() !== new Date(version.updatedAt).getTime()) {
-      throw new ConflictError("任务在草案生成后已被修改，请更新或重新生成草案，然后请重新预览");
+    if (
+      new Date(baseline.get(version.taskId) ?? "").getTime() !==
+      new Date(version.updatedAt).getTime()
+    ) {
+      throw new ConflictError(
+        "任务在草案生成后已被修改，请更新或重新生成草案，然后请重新预览",
+      );
     }
   }
-  const versionOf = new Map(input.expectedTaskVersions.map((v) => [v.taskId, v.updatedAt]));
+  const versionOf = new Map(
+    input.expectedTaskVersions.map((v) => [v.taskId, v.updatedAt]),
+  );
   if (versionOf.size !== ids.length || ids.some((id) => !versionOf.has(id))) {
     throw new ConflictError("草案中的任务已被改动，请重新预览");
   }
@@ -318,7 +399,8 @@ export async function suggestIterationCandidates(
   projectId: string,
   options: { limit?: number; size?: number } = {},
 ): Promise<IterationCandidateSuggestion[]> {
-  if (!(await getProjectForUser(actorId, projectId))) throw new ForbiddenError();
+  if (!(await getProjectForUser(actorId, projectId)))
+    throw new ForbiddenError();
 
   const poolLimit = Math.min(options.limit ?? CANDIDATE_LIMIT, PAGE_LIMIT_MAX);
   const page = await listBacklog(actorId, projectId, { limit: poolLimit });
@@ -330,7 +412,8 @@ export async function suggestIterationCandidates(
     .map((t) => scoreTask(t, today));
   scored.sort((a, b) => b.score - a.score);
 
-  const size = options.size && options.size > 0 ? options.size : DEFAULT_PROPOSAL_SIZE;
+  const size =
+    options.size && options.size > 0 ? options.size : DEFAULT_PROPOSAL_SIZE;
   return scored.slice(0, size).map((s) => ({
     taskId: s.task.id,
     expectedUpdatedAt: s.task.updatedAt,
@@ -338,7 +421,10 @@ export async function suggestIterationCandidates(
   }));
 }
 
-function scoreTask(task: TaskSummary, today: string): { task: TaskSummary; score: number; why: string[] } {
+function scoreTask(
+  task: TaskSummary,
+  today: string,
+): { task: TaskSummary; score: number; why: string[] } {
   const why: string[] = [];
   let score = PRIORITY_WEIGHT[task.priority] * 10;
   if (task.priority === "high") why.push("优先级高");

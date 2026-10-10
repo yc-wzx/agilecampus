@@ -2,9 +2,14 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import type { MyActiveIteration, QueryPart } from "@/contracts/p0-p2";
-import { todayInShanghai, type MyTask, type TaskGroupKey } from "@/lib/dashboard";
+import {
+  todayInShanghai,
+  type MyTask,
+  type TaskGroupKey,
+} from "@/lib/dashboard";
 import {
   getMyWorkspaceSummary,
+  getTeacherOverviewAccess,
   type RevisionRequiredItem,
 } from "@/lib/workspace-summary";
 
@@ -18,7 +23,11 @@ const STATUS_BADGE: Record<string, string> = {
   doing: "bg-primary-soft text-primary",
   done: "bg-done/12 text-done",
 };
-const PRIORITY_LABEL: Record<string, string> = { high: "高", medium: "中", low: "低" };
+const PRIORITY_LABEL: Record<string, string> = {
+  high: "高",
+  medium: "中",
+  low: "低",
+};
 const PRIORITY_BADGE: Record<string, string> = {
   high: "bg-high-soft text-high",
   medium: "bg-medium-soft text-medium",
@@ -33,7 +42,9 @@ const GROUP_ACCENT: Record<TaskGroupKey, string> = {
 
 // 上游返回的是 UTC 时间串，展示统一用北京时间
 function beijingDate(iso: string): string {
-  return new Date(new Date(iso).getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  return new Date(new Date(iso).getTime() + 8 * 3600 * 1000)
+    .toISOString()
+    .slice(0, 10);
 }
 
 function SectionHeading({
@@ -51,7 +62,9 @@ function SectionHeading({
     <>
       <h2 className="flex items-center gap-2 text-sm font-medium">
         <span className={accent}>{title}</span>
-        {count !== null && <span className="ac-badge bg-sunken text-ink-soft">{count}</span>}
+        {count !== null && (
+          <span className="ac-badge bg-sunken text-ink-soft">{count}</span>
+        )}
       </h2>
       {note && <p className="px-1 text-xs text-ink-faint">{note}</p>}
     </>
@@ -60,7 +73,9 @@ function SectionHeading({
 
 // 单项服务不可用时说明原因，不以空内容冒充成功
 function UnavailableNote({ message }: { message: string }) {
-  return <div className="ac-card p-4 text-center text-sm text-high">{message}</div>;
+  return (
+    <div className="ac-card p-4 text-center text-sm text-high">{message}</div>
+  );
 }
 
 function TaskRow({ task }: { task: MyTask }) {
@@ -73,12 +88,18 @@ function TaskRow({ task }: { task: MyTask }) {
         {task.title}
       </Link>
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-faint">
-        <span className="min-w-0 [overflow-wrap:anywhere]">{task.teamName} · {task.projectName}</span>
+        <span className="min-w-0 [overflow-wrap:anywhere]">
+          {task.teamName} · {task.projectName}
+        </span>
         <span>{task.dueDate ?? "未设置截止日期"}</span>
-        <span className={`ac-badge ${STATUS_BADGE[task.status] ?? "bg-sunken text-ink-soft"}`}>
+        <span
+          className={`ac-badge ${STATUS_BADGE[task.status] ?? "bg-sunken text-ink-soft"}`}
+        >
           {STATUS_LABEL[task.status] ?? task.status}
         </span>
-        <span className={`ac-badge ${PRIORITY_BADGE[task.priority] ?? "bg-low-soft text-low"}`}>
+        <span
+          className={`ac-badge ${PRIORITY_BADGE[task.priority] ?? "bg-low-soft text-low"}`}
+        >
           {PRIORITY_LABEL[task.priority] ?? task.priority}
         </span>
       </div>
@@ -96,12 +117,20 @@ function IterationRow({ item }: { item: MyActiveIteration }) {
         {item.name}
       </Link>
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-faint">
-        <span className="min-w-0 [overflow-wrap:anywhere]">{item.projectName}</span>
-        <span>{item.startDate} ~ {item.endDate}</span>
-        <span className="tabular-nums">主任务 {item.doneCount}/{item.taskTotal}</span>
+        <span className="min-w-0 [overflow-wrap:anywhere]">
+          {item.projectName}
+        </span>
+        <span>
+          {item.startDate} ~ {item.endDate}
+        </span>
+        <span className="tabular-nums">
+          主任务 {item.doneCount}/{item.taskTotal}
+        </span>
       </div>
       {item.goal && (
-        <p className="mt-1.5 [overflow-wrap:anywhere] text-xs text-ink-soft">目标：{item.goal}</p>
+        <p className="mt-1.5 [overflow-wrap:anywhere] text-xs text-ink-soft">
+          目标：{item.goal}
+        </p>
       )}
     </li>
   );
@@ -117,7 +146,9 @@ function RevisionRow({ item }: { item: RevisionRequiredItem }) {
         {item.title}
       </Link>
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-faint">
-        <span className="min-w-0 [overflow-wrap:anywhere]">{item.projectName}</span>
+        <span className="min-w-0 [overflow-wrap:anywhere]">
+          {item.projectName}
+        </span>
         <span>第 {item.versionNumber} 版</span>
         <span>{beijingDate(item.reviewedAt)}</span>
       </div>
@@ -143,18 +174,30 @@ function ready<T>(p: QueryPart<T>): T | null {
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ revisionsOffset?: string }>;
+  searchParams: Promise<{
+    revisionsOffset?: string;
+    iterationsOffset?: string;
+  }>;
 }) {
   const params = await searchParams;
   const offset = parseOffset(params.revisionsOffset);
+  const iterationsOffset = parseOffset(params.iterationsOffset);
   const session = await auth();
   if (!session?.user) redirect("/login");
 
-  const summary = await getMyWorkspaceSummary(session.user.id, { revisionsOffset: offset });
+  const [summary, teacherAccess] = await Promise.all([
+    getMyWorkspaceSummary(session.user.id, {
+      revisionsOffset: offset,
+      iterationsOffset,
+    }),
+    getTeacherOverviewAccess(session.user.id).catch(() => false),
+  ]);
   const today = todayInShanghai();
 
   const taskGroups = ready(summary.tasks);
-  const taskCount = taskGroups ? taskGroups.reduce((n, g) => n + g.tasks.length, 0) : null;
+  const taskCount = taskGroups
+    ? taskGroups.reduce((n, g) => n + g.tasks.length, 0)
+    : null;
   const iterations = ready(summary.activeIterations);
   const revisionPage = ready(summary.revisionRequired);
 
@@ -162,6 +205,11 @@ export default async function DashboardPage({
     <main className="mx-auto max-w-3xl space-y-6 py-8">
       <header className="space-y-1">
         <h1 className="font-display text-2xl font-semibold text-ink">工作台</h1>
+        {teacherAccess && (
+          <Link className="text-sm text-primary underline" href="/teacher">
+            教师项目总览
+          </Link>
+        )}
         <p className="[overflow-wrap:anywhere] text-sm text-ink-soft">
           你好，{session.user.name} · 今天 {today}
           {taskCount !== null && ` · 待处理 ${taskCount} 项`}
@@ -190,7 +238,9 @@ export default async function DashboardPage({
               <div key={g.key} className="space-y-2">
                 <h3 className="flex items-center gap-2 text-sm font-medium">
                   <span className={GROUP_ACCENT[g.key]}>{g.label}</span>
-                  <span className="ac-badge bg-sunken text-ink-soft">{g.tasks.length}</span>
+                  <span className="ac-badge bg-sunken text-ink-soft">
+                    {g.tasks.length}
+                  </span>
                 </h3>
                 {g.tasks.length === 0 ? (
                   <p className="px-1 text-sm text-ink-faint">暂无</p>
@@ -224,6 +274,29 @@ export default async function DashboardPage({
             ))}
           </ul>
         )}
+        {iterations &&
+          (iterationsOffset > 0 || iterations.nextOffset !== null) && (
+            <nav
+              aria-label="当前迭代分页"
+              className="flex flex-wrap gap-3 text-sm"
+            >
+              {iterationsOffset > 0 && (
+                <Link
+                  href={`/dashboard?iterationsOffset=${Math.max(0, iterationsOffset - 50)}&revisionsOffset=${offset}`}
+                >
+                  上一页
+                </Link>
+              )}
+              {iterations.nextOffset !== null && (
+                <Link
+                  href={`/dashboard?iterationsOffset=${iterations.nextOffset}&revisionsOffset=${offset}`}
+                >
+                  下一页
+                </Link>
+              )}
+              <span>共 {iterations.total} 轮</span>
+            </nav>
+          )}
       </section>
 
       <section id="revisions" className="space-y-2">
@@ -245,11 +318,14 @@ export default async function DashboardPage({
           </ul>
         )}
         {revisionPage && (offset > 0 || revisionPage.nextOffset !== null) && (
-          <nav aria-label="待修改成果分页" className="flex flex-wrap gap-3 text-sm">
+          <nav
+            aria-label="待修改成果分页"
+            className="flex flex-wrap gap-3 text-sm"
+          >
             {offset > 0 && (
               <Link
                 className="text-primary underline"
-                href={`/dashboard?revisionsOffset=${Math.max(0, offset - 50)}#revisions`}
+                href={`/dashboard?revisionsOffset=${Math.max(0, offset - 50)}&iterationsOffset=${iterationsOffset}#revisions`}
               >
                 上一页
               </Link>
@@ -257,7 +333,7 @@ export default async function DashboardPage({
             {revisionPage.nextOffset !== null && (
               <Link
                 className="text-primary underline"
-                href={`/dashboard?revisionsOffset=${revisionPage.nextOffset}#revisions`}
+                href={`/dashboard?revisionsOffset=${revisionPage.nextOffset}&iterationsOffset=${iterationsOffset}#revisions`}
               >
                 下一页
               </Link>

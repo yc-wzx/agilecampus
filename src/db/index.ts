@@ -2,9 +2,15 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "./schema";
 
-const globalForDb = globalThis as unknown as { dbClient?: ReturnType<typeof postgres> };
+const globalForDb = globalThis as unknown as {
+  dbClient?: ReturnType<typeof postgres>;
+};
 
-const client = globalForDb.dbClient ?? postgres(process.env.DATABASE_URL!);
+// Legacy timestamp-without-time-zone columns are serialized as UTC by Drizzle.
+// Keep database defaults in the same zone on Windows and Linux alike.
+const client =
+  globalForDb.dbClient ??
+  postgres(process.env.DATABASE_URL!, { connection: { TimeZone: "UTC" } });
 if (process.env.NODE_ENV !== "production") globalForDb.dbClient = client;
 
 export const db = drizzle(client, { schema });

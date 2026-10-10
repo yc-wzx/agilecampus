@@ -6,6 +6,8 @@
 node_modules
 .next
 .git
+backups
+.release.json
 .playwright-mcp
 tsconfig.tsbuildinfo
 npm-debug.log*

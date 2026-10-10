@@ -9,7 +9,17 @@ import type {
   Result,
 } from "@/contracts/p0-p2";
 import { runAction } from "@/lib/action-result";
-import { confirmIterationDraft, previewIterationDraft } from "@/lib/agent/iteration-draft";
+import {
+  confirmIterationDraft,
+  previewIterationDraft,
+  generateIterationDraft,
+  updateIterationDraft,
+  cancelIterationDraft,
+} from "@/lib/agent/iteration-draft";
+import type {
+  GenerateDraftInput,
+  UpdateDraftInput,
+} from "@/lib/agent/iteration-draft-management";
 
 // C / P2：AI 迭代草案的 Action 入口（定稿 §9.9 路径表）。
 //
@@ -31,13 +41,20 @@ import { confirmIterationDraft, previewIterationDraft } from "@/lib/agent/iterat
 
 const draftId = z.uuid("草案 id 不合法");
 const requestId = z.uuid("请求标识不合法");
-const instant = z.string().refine((s) => !Number.isNaN(new Date(s).getTime()), "时间格式不正确");
+const instant = z
+  .string()
+  .refine((s) => !Number.isNaN(new Date(s).getTime()), "时间格式不正确");
 
 const confirmSchema = z.strictObject({
   requestId,
-  expectedDraftRevision: z.number().int("版本号必须是整数").positive("版本号不合法"),
+  expectedDraftRevision: z
+    .number()
+    .int("版本号必须是整数")
+    .positive("版本号不合法"),
   expectedTaskVersions: z
-    .array(z.strictObject({ taskId: z.uuid("任务 id 不合法"), updatedAt: instant }))
+    .array(
+      z.strictObject({ taskId: z.uuid("任务 id 不合法"), updatedAt: instant }),
+    )
     .max(500, "一次最多处理 500 个任务"),
 });
 
@@ -55,6 +72,39 @@ function refresh(projectId: string) {
   } catch {
     console.error("[ai-drafts] cache refresh failed");
   }
+}
+
+export async function generateIterationDraftAction(
+  projectId: string,
+  input: GenerateDraftInput,
+) {
+  const result = await runAction((actorId) =>
+    generateIterationDraft(actorId, projectId, input),
+  );
+  if (result.ok) refresh(projectId);
+  return result;
+}
+export async function updateIterationDraftAction(
+  projectId: string,
+  draftId: string,
+  input: UpdateDraftInput,
+) {
+  const result = await runAction((actorId) =>
+    updateIterationDraft(actorId, projectId, draftId, input),
+  );
+  if (result.ok) refresh(projectId);
+  return result;
+}
+export async function cancelIterationDraftAction(
+  projectId: string,
+  draftId: string,
+  input: { requestId: string; expectedRevision: number },
+) {
+  const result = await runAction((actorId) =>
+    cancelIterationDraft(actorId, projectId, draftId, input),
+  );
+  if (result.ok) refresh(projectId);
+  return result;
 }
 
 /** C-AI01。读，不落库（除过期的落列），因此不需要 refresh。 */
@@ -87,7 +137,9 @@ export async function confirmIterationDraftAction(
   if (!parsed.success) return invalid(parsed.error);
 
   const { projectId: pid, draftId: did, ...rest } = parsed.data;
-  const result = await runAction((actorId) => confirmIterationDraft(actorId, pid, did, rest));
+  const result = await runAction((actorId) =>
+    confirmIterationDraft(actorId, pid, did, rest),
+  );
   if (result.ok) refresh(pid);
   return result;
 }

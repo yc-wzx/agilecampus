@@ -1,11 +1,20 @@
 import { generateText, stepCountIs, type LanguageModel } from "ai";
-import { buildTools, type DraftEnvelope } from "./tools";
-import { buildProjectSnapshot } from "./snapshot";
 import {
-  getOrCreateConversation,
-  persistTurn,
-  type ToolTraceEntry,
-} from "./conversation";
+  buildTools,
+  listMyProjectsBrief,
+  listTasksFiltered,
+  type DraftEnvelope,
+} from "./tools";
+import {
+  buildAuthorizedProjectContext,
+  getOrCreateScopedConversation,
+  listBoundedConversationMessages,
+  requireScopedConversation,
+  type ConversationScope,
+} from "./context";
+import { buildP0P2ReadTools } from "./p0-p2-tools";
+import { readProject } from "@/lib/project-read";
+import { persistTurn, type ToolTraceEntry } from "./conversation";
 import { getModel } from "./model";
 
 const SYSTEM_PREAMBLE = `你是 AgileCampus（敏捷校园）的项目管理助手，服务高校科研与课程团队。
@@ -46,22 +55,57 @@ export async function runAgentTurn(params: {
   projectId: string;
   userText: string;
   model?: LanguageModel;
+  scope?: ConversationScope;
+  conversationId?: string;
 }) {
   const { actorId, projectId, userText, model } = params;
 
   // 权限收敛：会话创建内部经 getProjectForUser 校验，非成员/不存在一律 ForbiddenError
-  const conversation = await getOrCreateConversation(actorId, projectId);
-  const snapshot = await buildProjectSnapshot(actorId, projectId);
-  const tools = buildTools(actorId, projectId);
+  const scope = params.scope ?? "project";
+  const conversation = params.conversationId
+    ? await requireScopedConversation(
+        actorId,
+        projectId,
+        params.conversationId,
+        scope,
+      )
+    : await getOrCreateScopedConversation(actorId, projectId, { scope });
+  const [context, history] = await Promise.all([
+    buildAuthorizedProjectContext(actorId, projectId, {
+      conversationId: conversation.id,
+    }),
+    listBoundedConversationMessages(actorId, conversation.id),
+  ]);
+  const tools = {
+    ...buildTools(actorId, projectId),
+    ...buildP0P2ReadTools(actorId, projectId),
+  };
+  tools.list_tasks.description +=
+    "（本轮最多返回前40条，较大项目请用状态/负责人筛选。）";
+  tools.list_tasks.execute = async (input) =>
+    (await listTasksFiltered(actorId, projectId, input)).slice(0, 40);
+  if (scope === "project") {
+    tools.list_projects.execute = async () =>
+      (await listMyProjectsBrief(actorId)).filter((p) => p.id === projectId);
+  }
 
   const result = await generateText({
     model: model ?? getModel(),
-    system: `${SYSTEM_PREAMBLE}\n\n${snapshot}`,
+    system: `${SYSTEM_PREAMBLE}\n\n${context.context}`,
     tools,
     stopWhen: stepCountIs(5),
     // 设计 §6.4：不自动重试——覆盖 AI SDK 默认 maxRetries=2，失败即如实呈报
     maxRetries: 0,
-    messages: [{ role: "user", content: userText }],
+    abortSignal: AbortSignal.timeout(60000),
+    messages: [
+      ...history.items
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        })),
+      { role: "user", content: userText },
+    ],
   });
 
   // 工具轨迹：逐步展开 toolCalls 与对应 toolResults
@@ -79,11 +123,22 @@ export async function runAgentTurn(params: {
       .map((tr) => tr.output as unknown)
       .filter(
         (o): o is DraftEnvelope =>
-          typeof o === "object" && o !== null && (o as { __draft?: unknown }).__draft === true,
+          typeof o === "object" &&
+          o !== null &&
+          (o as { __draft?: unknown }).__draft === true,
       ),
   );
 
-  await persistTurn(conversation.id, userText, result.text, toolTrace);
+  await requireScopedConversation(actorId, projectId, conversation.id, scope);
+  await readProject(actorId, projectId, () =>
+    persistTurn(conversation.id, userText, result.text, toolTrace),
+  );
 
-  return { conversationId: conversation.id, text: result.text, toolTrace, drafts };
+  return {
+    conversationId: conversation.id,
+    scope,
+    text: result.text,
+    toolTrace,
+    drafts,
+  };
 }
