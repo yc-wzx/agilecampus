@@ -69,7 +69,7 @@ try {
   );
   const baselineFolder = path.join(folder, `baseline-${suffix}`);
   fs.mkdirSync(path.join(baselineFolder, "meta"), { recursive: true });
-  const baselineEntries = journal.entries.filter((entry) => entry.idx <= 12);
+  const baselineEntries = journal.entries.filter((entry) => entry.idx <= 13);
   for (const entry of baselineEntries)
     fs.copyFileSync(
       path.join("drizzle", entry.tag + ".sql"),
@@ -137,6 +137,18 @@ try {
     "project_lead_changes",
     "project_references",
   );
+  const personalEvent = randomUUID(),
+    personalPlan = randomUUID();
+  await source`insert into personal_schedule_state(user_id,revision,preferences) values(${user},1,'{"workStart":"18:00","workEnd":"22:00","days":[1,2,3,4,5],"dailyMinutes":120,"blockMinutes":45,"bufferMinutes":15}'::jsonb)`;
+  await source`insert into personal_schedule_events(id,user_id,title,start_at,end_at,fingerprint,source) values(${personalEvent},${user},'私有课程','2026-10-12 08:00+08','2026-10-12 09:40+08','restore-synthetic','manual')`;
+  await source`insert into personal_schedule_requests(user_id,operation,request_id,request_hash,result) values(${user},'events.import',${randomUUID()},'restore-synthetic','{"added":1,"skipped":0,"revision":1}'::jsonb)`;
+  await source`insert into personal_work_plans(id,user_id,project_id,start_date,end_date,goal,mode,snapshot_hash,schedule_revision,input,items,unmet,warnings,expires_at) values(${personalPlan},${user},${project},'2026-10-12','2026-10-18','恢复个人安排','rules','synthetic',1,${JSON.stringify({ requestId: randomUUID(), startDate: "2026-10-12", days: 7, mode: "rules", goal: "恢复个人安排", selections: [{ taskId: task, minutes: 60 }] })}::jsonb,'[]'::jsonb,'[]'::jsonb,'[]'::jsonb,now()+interval '1 day')`;
+  tables.push(
+    "personal_schedule_state",
+    "personal_schedule_events",
+    "personal_schedule_requests",
+    "personal_work_plans",
+  );
   const before = new Map();
   for (const table of tables) before.set(table, await read(source, table));
   await migrate(drizzle(source), { migrationsFolder: "drizzle" });
@@ -165,17 +177,24 @@ try {
     leader_id: user,
     leader_revision: 1,
   });
-  const personalEvent = randomUUID(),
-    personalPlan = randomUUID();
-  await source`insert into personal_schedule_state(user_id,revision,preferences) values(${user},1,'{"workStart":"18:00","workEnd":"22:00","days":[1,2,3,4,5],"dailyMinutes":120,"blockMinutes":45,"bufferMinutes":15}'::jsonb)`;
-  await source`insert into personal_schedule_events(id,user_id,title,start_at,end_at,fingerprint,source) values(${personalEvent},${user},'私有课程','2026-10-12 08:00+08','2026-10-12 09:40+08','restore-synthetic','manual')`;
-  await source`insert into personal_schedule_requests(user_id,operation,request_id,request_hash,result) values(${user},'events.import',${randomUUID()},'restore-synthetic','{"added":1,"skipped":0,"revision":1}'::jsonb)`;
-  await source`insert into personal_work_plans(id,user_id,project_id,start_date,end_date,goal,mode,snapshot_hash,schedule_revision,input,items,unmet,warnings,expires_at) values(${personalPlan},${user},${project},'2026-10-12','2026-10-18','恢复个人安排','rules','synthetic',1,${JSON.stringify({ requestId: randomUUID(), startDate: "2026-10-12", days: 7, mode: "rules", goal: "恢复个人安排", selections: [{ taskId: task, minutes: 60 }] })}::jsonb,'[]'::jsonb,'[]'::jsonb,'[]'::jsonb,now()+interval '1 day')`;
-  tables.push(
-    "personal_schedule_state",
-    "personal_schedule_events",
-    "personal_schedule_requests",
-    "personal_work_plans",
+  const [privacy] =
+    await source`select shared_team_ids,share_work_plans,sharing_revision from personal_schedule_state where user_id=${user}`;
+  assert.deepEqual(privacy, {
+    shared_team_ids: [],
+    share_work_plans: false,
+    sharing_revision: 0,
+  });
+  assert.equal(
+    (
+      await source`select share_busy from personal_schedule_events where id=${personalEvent}`
+    )[0].share_busy,
+    false,
+  );
+  assert.equal(
+    (
+      await source`select replaces_plan_id from personal_work_plans where id=${personalPlan}`
+    )[0].replaces_plan_id,
+    null,
   );
   pg("pg_dump", ["-d", sourceName, "-Fc", "-f", dump]);
   pg("pg_restore", ["-d", restoredName, "--exit-on-error", "--no-owner", dump]);
@@ -197,7 +216,7 @@ try {
     await target`update project_references set revision=revision+1,note='恢复后可修改' where id=${reference} returning revision`;
   assert.equal(savedReference.revision, 2);
   const [savedPersonal] =
-    await target`update personal_schedule_events set revision=revision+1,title='恢复后仍属本人' where id=${personalEvent} returning revision`;
+    await target`update personal_schedule_events set revision=revision+1,title='恢复后仍属本人',share_busy=true where id=${personalEvent} returning revision`;
   assert.equal(savedPersonal.revision, 2);
   await migrate(drizzle(target), { migrationsFolder: "drizzle" });
   const [ledger] =
@@ -217,7 +236,8 @@ try {
     migrationLedger: ledger.total,
     postRestoreWrite: true,
     migrationReplay: true,
-    upgradedFrom: "0012",
+    upgradedFrom: "0013",
+    legacyPrivacyDefaults: true,
     legacyDataPreserved: true,
     p3PostRestoreWrite: true,
     personalSchedulePostRestoreWrite: true,

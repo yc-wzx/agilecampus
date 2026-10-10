@@ -1002,6 +1002,12 @@ export const personalScheduleState = pgTable("personal_schedule_state", {
     .references(() => users.id, { onDelete: "cascade" }),
   revision: integer("revision").notNull().default(0),
   preferences: jsonb("preferences").notNull().default({}),
+  sharingRevision: integer("sharing_revision").notNull().default(0),
+  sharedTeamIds: jsonb("shared_team_ids")
+    .$type<string[]>()
+    .notNull()
+    .default([]),
+  shareWorkPlans: boolean("share_work_plans").notNull().default(false),
 });
 
 export const personalScheduleEvents = pgTable(
@@ -1015,6 +1021,7 @@ export const personalScheduleEvents = pgTable(
     startAt: timestamp("start_at", { withTimezone: true }).notNull(),
     endAt: timestamp("end_at", { withTimezone: true }).notNull(),
     fingerprint: text("fingerprint").notNull(),
+    shareBusy: boolean("share_busy").notNull().default(false),
     source: text("source").notNull(),
     revision: integer("revision").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -1068,6 +1075,7 @@ export const personalWorkPlans = pgTable(
     goal: text("goal").notNull(),
     mode: text("mode").notNull(),
     snapshotHash: text("snapshot_hash").notNull(),
+    replacesPlanId: uuid("replaces_plan_id"),
     scheduleRevision: integer("schedule_revision").notNull(),
     input: jsonb("input").notNull(),
     items: jsonb("items").notNull(),

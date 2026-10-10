@@ -7,6 +7,8 @@ import {
   addManualScheduleAction,
   saveSchedulePreferencesAction,
   changeScheduleEventAction,
+  addEmergencyScheduleAction,
+  saveScheduleSharingAction,
 } from "@/app/(app)/schedule/actions";
 import type {
   ScheduleEventInput,
@@ -24,6 +26,7 @@ function useHydrated() {
 
 export function useScheduleWrite<T>(
   execute: (form: FormData) => Promise<Result<T>>,
+  successPath?: string,
 ) {
   const ready = useHydrated();
   const locked = useRef(false),
@@ -41,8 +44,10 @@ export function useScheduleWrite<T>(
     setError("");
     try {
       const result = await execute(form);
-      if (result.ok) window.location.reload();
-      else setError(result.error);
+      if (result.ok) {
+        if (successPath) window.location.assign(successPath);
+        else window.location.reload();
+      } else setError(result.error);
     } catch {
       setError("未能确认结果，请刷新核对或重试。重试使用原请求标识。");
     } finally {
@@ -368,6 +373,7 @@ export function ManualForm({ requestId }: { requestId: string }) {
       end: String(form.get("end")),
       repeatWeeks: Number(form.get("repeatWeeks")),
       intervalWeeks: Number(form.get("intervalWeeks")) as 1 | 2,
+      shareBusy: form.has("shareBusy"),
     }),
   );
   return (
@@ -425,6 +431,7 @@ export function ManualForm({ requestId }: { requestId: string }) {
       <button disabled={pending} className="ac-btn">
         {pending ? "添加中…" : "添加个人日程"}
       </button>
+      <BusySharingCheckbox />
     </form>
   );
 }
@@ -446,6 +453,7 @@ export function EventControls({
               title: String(form.get("title")),
               startAt: fromLocal(String(form.get("start"))),
               endAt: fromLocal(String(form.get("end"))),
+              shareBusy: form.has("shareBusy"),
             },
     }),
   );
@@ -487,6 +495,7 @@ export function EventControls({
             />
           </label>
         </div>
+        <BusySharingCheckbox checked={event.shareBusy ?? false} />
         <Feedback error={mutation.error} />
         <div className="flex flex-wrap gap-3">
           <button
@@ -519,4 +528,131 @@ function toLocal(iso: string) {
 }
 function fromLocal(value: string) {
   return new Date(value + ":00+08:00").toISOString();
+}
+
+function BusySharingCheckbox({ checked = false }: { checked?: boolean }) {
+  return (
+    <label className="flex items-start gap-2 text-sm">
+      <input type="checkbox" name="shareBusy" defaultChecked={checked} />
+      <span>
+        允许向已选择的团队显示这次忙碌时间（隐藏名称，按半小时模糊显示）
+      </span>
+    </label>
+  );
+}
+export function EmergencyForm({ requestId }: { requestId: string }) {
+  const mutation = useScheduleWrite((form) =>
+    addEmergencyScheduleAction({
+      requestId,
+      title: String(form.get("title") || ""),
+      start: String(form.get("start")),
+      end: String(form.get("end")),
+      shareBusy: form.has("shareBusy"),
+    }),
+  );
+  return (
+    <form onSubmit={mutation.onSubmit} className="space-y-3">
+      <p className="text-sm text-ink-soft">
+        临时有事时登记占用时间，最长 7
+        天；无需说明原因。保存后可重新规划，原安排在你确认新草案前保持有效。
+      </p>
+      <label className="block text-sm">
+        本人备注（可不填）
+        <input
+          name="title"
+          maxLength={100}
+          placeholder="临时安排，仅本人能看到此名称"
+          className="ac-field"
+        />
+      </label>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="text-sm">
+          临时事件开始（北京时间）
+          <input
+            type="datetime-local"
+            name="start"
+            required
+            className="ac-field min-w-0"
+          />
+        </label>
+        <label className="text-sm">
+          临时事件结束（北京时间）
+          <input
+            type="datetime-local"
+            name="end"
+            required
+            className="ac-field min-w-0"
+          />
+        </label>
+      </div>
+      <BusySharingCheckbox />
+      <Feedback error={mutation.error} />
+      <button disabled={mutation.pending} className="ac-btn">
+        {mutation.pending ? "保存中…" : "补充临时事件"}
+      </button>
+    </form>
+  );
+}
+export function SharingForm({
+  teams,
+  teamIds,
+  shareWorkPlans,
+  revision,
+  requestId,
+}: {
+  teams: { id: string; name: string }[];
+  teamIds: string[];
+  shareWorkPlans: boolean;
+  revision: number;
+  requestId: string;
+}) {
+  const mutation = useScheduleWrite((form) =>
+    saveScheduleSharingAction({
+      requestId,
+      expectedRevision: revision,
+      teamIds: form.getAll("teamIds").map(String),
+      shareWorkPlans: form.has("shareWorkPlans"),
+    }),
+  );
+  return (
+    <form onSubmit={mutation.onSubmit} className="space-y-3">
+      <p className="text-sm text-ink-soft">
+        默认私有。只向下方选中的团队显示你允许共享的忙碌时间；老师和组员均看不到名称、备注或具体事情。可随时撤回。
+      </p>
+      <fieldset className="space-y-2">
+        <legend className="mb-2 text-sm font-medium">允许查看的团队</legend>
+        {!teams.length && (
+          <p className="text-sm text-ink-soft">尚未加入团队。</p>
+        )}
+        {teams.map((t) => (
+          <label key={t.id} className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              name="teamIds"
+              value={t.id}
+              defaultChecked={teamIds.includes(t.id)}
+            />
+            <span className="break-words">{t.name}</span>
+          </label>
+        ))}
+      </fieldset>
+      <label className="flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          name="shareWorkPlans"
+          defaultChecked={shareWorkPlans}
+        />
+        <span>
+          同时显示已确认的项目工作时段为“忙碌”（仅对应项目所在团队，隐藏任务和目标）
+        </span>
+      </label>
+      <p className="text-xs text-ink-soft">
+        导入的课表默认不共享，请在下方逐项修改需要公开的日程。未共享的时段不能作为空闲证明。
+      </p>
+      <Feedback error={mutation.error} />
+      <button disabled={mutation.pending} className="ac-btn">
+        保存日程共享设置
+      </button>
+    </form>
+  );
 }

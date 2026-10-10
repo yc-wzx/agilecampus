@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import Link from "next/link";
 import {
   generatePersonalPlanAction,
   changePersonalPlanAction,
@@ -14,6 +15,7 @@ export function PersonalPlanGenerator({
   total,
   requestId,
   aiAvailable,
+  seed,
 }: {
   projectId: string;
   startDate: string;
@@ -21,8 +23,18 @@ export function PersonalPlanGenerator({
   total: number;
   requestId: string;
   aiAvailable: boolean;
+  seed?: {
+    id: string;
+    goal: string;
+    mode: "ai" | "rules";
+    selections: { taskId: string; minutes: number }[];
+  };
 }) {
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<string[]>(
+    seed?.selections
+      .filter((s) => candidates.some((t) => t.id === s.taskId))
+      .map((s) => s.taskId) ?? [],
+  );
   const { pending, error, onSubmit } = useScheduleWrite((form) =>
     generatePersonalPlanAction(projectId, {
       requestId,
@@ -30,6 +42,7 @@ export function PersonalPlanGenerator({
       days: Number(form.get("days")) as 7 | 14,
       goal: String(form.get("goal") || ""),
       mode: String(form.get("mode")) as "ai" | "rules",
+      ...(seed ? { replacePlanId: seed.id } : {}),
       selections: selected.map((taskId) => ({
         taskId,
         minutes: Number(form.get("minutes:" + taskId)),
@@ -39,6 +52,11 @@ export function PersonalPlanGenerator({
   return (
     <form onSubmit={onSubmit} className="ac-card space-y-4 p-4">
       <h2 className="font-semibold">生成个人短期计划草案</h2>
+      {seed && (
+        <p role="status" className="text-sm text-primary">
+          正在按新日程重新规划。已带入原目标和仍可执行的任务，请重新核对剩余工时；已过去的安排不等于工作已完成。确认新草案后才替换原安排。
+        </p>
+      )}
       <div className="grid gap-3 sm:grid-cols-3">
         <label className="text-sm">
           开始日期
@@ -61,7 +79,9 @@ export function PersonalPlanGenerator({
           规划方式
           <select
             name="mode"
-            defaultValue={aiAvailable ? "ai" : "rules"}
+            defaultValue={
+              seed?.mode === "rules" || !aiAvailable ? "rules" : "ai"
+            }
             className="ac-field"
           >
             <option value="ai" disabled={!aiAvailable}>
@@ -79,7 +99,9 @@ export function PersonalPlanGenerator({
       <label className="block text-sm">
         本期想推进的目标（可选）
         <textarea
+          aria-label="本期想推进的目标（可选）"
           name="goal"
+          defaultValue={seed?.goal ?? ""}
           maxLength={1000}
           rows={2}
           placeholder="例如：优先完成下周展示需要的功能，每天投入不超过 2 小时"
@@ -139,7 +161,10 @@ export function PersonalPlanGenerator({
                 min={15}
                 max={2400}
                 step={15}
-                defaultValue={60}
+                defaultValue={
+                  seed?.selections.find((s) => s.taskId === task.id)?.minutes ??
+                  60
+                }
                 disabled={!selected.includes(task.id)}
                 className="ac-field w-24"
               />
@@ -166,18 +191,29 @@ export function PersonalPlanControls({
   plan: Workspace["plans"][number];
   requestId: string;
 }) {
-  const { pending, error, onSubmit } = useScheduleWrite((form) =>
-    changePersonalPlanAction(projectId, plan.id, {
-      requestId,
-      expectedRevision: plan.revision,
-      action: String(form.get("operation")) as "confirm" | "cancel",
-    }),
+  const { pending, error, onSubmit } = useScheduleWrite(
+    (form) =>
+      changePersonalPlanAction(projectId, plan.id, {
+        requestId,
+        expectedRevision: plan.revision,
+        action: String(form.get("operation")) as "confirm" | "cancel",
+      }),
+    `/projects/${projectId}/personal-plan`,
   );
   if (plan.status === "cancelled") return null;
   return (
     <form onSubmit={onSubmit} className="space-y-2">
       <Feedback error={error} />
       <div className="flex flex-wrap gap-3">
+        {plan.status === "confirmed" && (
+          <Link
+            prefetch={false}
+            href={`/projects/${projectId}/personal-plan?replan=${plan.id}`}
+            className="ac-btn"
+          >
+            按新日程重新规划
+          </Link>
+        )}
         {plan.status === "draft" && (
           <button
             name="operation"

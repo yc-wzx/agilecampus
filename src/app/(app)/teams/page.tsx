@@ -41,7 +41,10 @@ export default async function TeamsPage() {
                     <RoleBadge role={t.role} />
                   </div>
                   <p className="mt-1 text-xs text-ink-faint">
-                    邀请码 <span className="font-mono text-ink-soft">{t.inviteCode}</span>
+                    邀请码{" "}
+                    <span className="font-mono text-ink-soft">
+                      {t.inviteCode}
+                    </span>
                   </p>
                 </div>
               </div>
@@ -49,7 +52,10 @@ export default async function TeamsPage() {
                 <Link href={`/teams/${t.id}/projects`} className="ac-btn-ghost">
                   项目
                 </Link>
-                <Link href={`/teams/${t.id}/resources`} className="ac-btn-ghost">
+                <Link
+                  href={`/teams/${t.id}/resources`}
+                  className="ac-btn-ghost"
+                >
                   资源占用
                 </Link>
                 <Link href={`/teams/${t.id}/members`} className="ac-btn-ghost">
@@ -57,6 +63,13 @@ export default async function TeamsPage() {
                 </Link>
                 <Link href={`/teams/${t.id}/labels`} className="ac-btn-ghost">
                   标签
+                </Link>
+                <Link
+                  prefetch={false}
+                  href={`/teams/${t.id}/availability`}
+                  className="ac-btn-ghost"
+                >
+                  忙碌日程
                 </Link>
               </div>
             </li>
@@ -68,7 +81,11 @@ export default async function TeamsPage() {
   );
 }
 
-const ROLE_LABEL: Record<string, string> = { admin: "管理员", teacher: "导师", student: "成员" };
+const ROLE_LABEL: Record<string, string> = {
+  admin: "管理员",
+  teacher: "导师",
+  student: "成员",
+};
 
 function RoleBadge({ role }: { role: string }) {
   const cls =

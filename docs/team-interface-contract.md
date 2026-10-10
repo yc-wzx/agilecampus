@@ -798,8 +798,34 @@ P2草案只选择已有任务，模型输出taskId必须来自本次有权任务
 
 AI 只提出真实选中任务的顺序、目标和理由。服务端按 15 分钟粒度限制工作星期／时段、课程与日程、休息缓冲、跨项目已确认安排和每日总工时，再考虑任务开始日与最早阶段期限。输出包含陌生任务、重复／遗漏任务、错误 JSON 时拒绝保存；不可静默冒充成功或切换为 AI。未配置模型时可由用户明确选择 rules。
 
-个人写入串行锁定本人的偏好状态行。AI 请求有生成租约、同一人同时最多一个请求；模型计算在事务外，完成后检查原任务／课表快照仍一致。草案有效 24 小时；确认时要求未过期、工作段未开始、快照未变化且至少有一个工作段。同项目重叠的已确认安排须先取消，其他项目安排作为忙碌时间和已投入分钟扣除。
+个人写入串行锁定本人的偏好状态行。AI 请求有生成租约、同一人同时最多一个请求；模型计算在事务外，完成后检查原任务／课表快照仍一致。草案有效 24 小时；确认时要求未过期、工作段未开始、快照未变化且至少有一个工作段。同项目重叠的已确认安排通过指定原计划重新规划，其他项目安排作为忙碌时间和已投入分钟扣除。
 
 课表名称和原始日程不发送给模型；模型获得可投入容量和项目任务内容。确认只改 `personal_work_plans`，不改任务状态、负责人、日期或团队迭代。没有写入 E/F 活动事件和通知，因此其他成员无需增加枚举适配。
 
 迁移 `0013_personal_schedule_planning` 新增 `personal_schedule_state / personal_schedule_events / personal_schedule_requests / personal_work_plans` 四表，全库备份包含这些私有数据。服务器使用原 `db:migrate` 发布流程；真实 AI 与学生课表样本另行验收。
+
+### 15.5 【本轮新增】临时事件、重新规划与模糊时间共享
+
+本节只增加可选参数和独立接口，P0–P2 及原个人规划输入继续兼容。
+
+| 增量接口／字段 | 固定约定 |
+|---|---|
+| `ScheduleEventInput.shareBusy` / `ManualScheduleInput.shareBusy` | 可选 boolean，默认 false；仅允许将模糊时间显示给本人授权的团队；导入文件本身不能设置公开权限 |
+| `GeneratePlanInput.replacePlanId` | 可选 UUID；必须是本人、同一项目的 confirmed 计划；生成草案保留原计划，确认时原子替换 |
+| 计划视图 `replacesPlanId` | UUID 或 null；保留历史替换关系，不属于共享 DTO |
+| `addEmergencyScheduleAction(input)` | `{ requestId, start, end, title?, shareBusy? }`；北京时间 `YYYY-MM-DDTHH:mm`，单次最多 7 天，title 最多 100 字，空时用「临时安排」，source 固定 emergency；返回原导入结果 |
+| `saveScheduleSharingAction(input)` | `{ requestId, expectedRevision, teamIds: UUID[], shareWorkPlans: boolean }`；最多 50 个不重复当前团队；expectedRevision 指独立 sharingRevision，从 0 起；返回 `{ revision }` |
+| `getMySchedule` 返回增加 | sharingRevision、sharedTeamIds、shareWorkPlans；事件含 shareBusy；只在本人页面返回完整字段 |
+| `@/lib/schedule/planner`：`getReplanningSeed(actorId, projectId, id)` | 当前项目成员的本人 confirmed 计划，返回 `{ id, goal, mode, selections }`，用于带入表单；剩余工时仍需本人核对 |
+| `@/lib/schedule/availability`：`getTeamAvailability(actorId, teamId, { startDate?, days? })` | 当前团队成员／教师可读；days 7 或 14，默认 7；严格使用下方共享 DTO |
+| 同上：`getMyPlansNeedingReview(actorId)` | 本人未来 confirmed 计划，课表 revision 变化且本人仍在项目团队；最多 100 条，返回 id/projectId/projectName |
+
+两个新 Action 导入路径仍为 `@/app/(app)/schedule/actions`，操作人由 session 提供，严格拒绝客户端身份字段；返回原 `Result<T>`，同请求重试不重复写入，旧版本返回 CONFLICT。事件是否共享使用该事件 revision 校验；团队共享使用独立 sharingRevision。只改变共享设置不改变日程 revision；仅改同一事件的 shareBusy 也不使工作计划过时。
+
+未传 shareBusy 或传 false 的私有事件沿用升级前的请求内容哈希；旧成功导入可安全重放，不因新增默认字段报冲突，也不复活已删除日程。改为 true 属于新内容，必须使用新 requestId。
+
+共享 HTTP 入口：`GET /api/teams/{teamId}/availability?from=YYYY-MM-DD&days=7`。未登录 401、非当前团队成员 403、无效范围／数据过多 400、内部失败 500；所有响应 `Cache-Control: private, no-store`。页面入口 `/teams/{teamId}/availability`，无匿名订阅链接。
+
+共享 DTO 严格为 `{ team: { id, name }, startDate, endDate, timeZone: "Asia/Shanghai", members: [{ id, name, role, sharingEnabled, periods: [{ startAt, endAt }] }] }`。每段按半小时向外取整并合并重叠／相接片段；不返回事件 ID、名称、来源、备注、任务／项目 ID、目标或理由。只含当前成员主动授权的事件；工作时段需要额外 shareWorkPlans 授权且项目属于当前查看团队，只显示 confirmed 安排。最多 100 位成员、5,000 个事件、500 个计划；超过拒绝，不截断后当作空闲。未共享及零个公开时段均不能证明有空。撤回、退出后新请求重新检查权限。
+
+重新规划快照包含原计划版本；新草案排程时忽略待替换原计划的时间，保留所有其他冲突约束。生成失败、取消草案、确认过期或快照冲突均保留原安排。确认在同一事务中取消原计划、确认新计划并更新新快照；另一替换草案随后不能确认，旧幂等请求不复活原计划。不改共享任务／迭代，不增加 E/F 事件枚举。迁移 `0014_emergency_availability`，旧课表／安排默认保持私有。

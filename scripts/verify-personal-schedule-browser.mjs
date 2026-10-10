@@ -20,7 +20,7 @@ const sql = postgres(url.href),
   teamId = randomUUID(),
   projectId = randomUUID(),
   taskId = randomUUID();
-const members = ["admin", "student", "outsider"].map((role) => ({
+const members = ["admin", "student", "teacher", "outsider"].map((role) => ({
   id: randomUUID(),
   role,
   email: `${role}.${token}@schedule-browser.test`,
@@ -188,6 +188,151 @@ try {
     path: path.join(output, "plan-desktop.png"),
     fullPage: true,
   });
+  // Supplement an emergency, explicitly share only its blurred time, and replan.
+  await page.goto(origin + "/schedule");
+  const emergencyTitle = "不公开的临时事情-" + token.slice(0, 8);
+  const emergencyForm = page
+    .locator("section")
+    .filter({
+      has: page.getByRole("heading", { name: "补充临时事件", exact: true }),
+    })
+    .locator("form");
+  await emergencyForm
+    .getByLabel("本人备注（可不填）", { exact: true })
+    .fill(emergencyTitle);
+  await emergencyForm
+    .getByLabel("临时事件开始（北京时间）", { exact: true })
+    .fill(startDate + "T20:22");
+  await emergencyForm
+    .getByLabel("临时事件结束（北京时间）", { exact: true })
+    .fill(startDate + "T21:12");
+  await write(
+    page,
+    emergencyForm.getByRole("button", { name: "补充临时事件", exact: true }),
+  );
+  await page
+    .getByRole("heading", { name: "需要重新核对的个人安排", exact: true })
+    .waitFor();
+  const sharingForm = page
+    .locator("section")
+    .filter({
+      has: page.getByRole("heading", { name: "日程共享设置", exact: true }),
+    })
+    .locator("form");
+  await sharingForm
+    .getByRole("checkbox", { name: "个人日程浏览器测试", exact: true })
+    .check();
+  await write(
+    page,
+    sharingForm.getByRole("button", { name: "保存日程共享设置", exact: true }),
+  );
+  const teacher = await login(members.find((m) => m.role === "teacher"));
+  const busyURL =
+    origin + "/teams/" + teamId + "/availability?from=" + startDate;
+  const apiURL =
+    origin + "/api/teams/" + teamId + "/availability?from=" + startDate;
+  await teacher.page.goto(busyURL);
+  let response = await teacher.page.request.get(apiURL),
+    data = await response.json();
+  assert.equal(response.status(), 200);
+  assert.equal(response.headers()["cache-control"], "private, no-store");
+  assert.deepEqual(data.members.find((m) => m.id === student.id).periods, []);
+  const emergencyArticle = page.locator("article").filter({
+    has: page.getByRole("heading", { name: emergencyTitle, exact: true }),
+  });
+  await emergencyArticle
+    .getByText("修改／删除这次日程", { exact: true })
+    .click();
+  await emergencyArticle.getByRole("checkbox").check();
+  await write(
+    page,
+    emergencyArticle.getByRole("button", { name: "保存这次日程", exact: true }),
+  );
+  await teacher.page.reload();
+  response = await teacher.page.request.get(apiURL);
+  data = await response.json();
+  assert.deepEqual(data.members.find((m) => m.id === student.id).periods, [
+    {
+      startAt: new Date(startDate + "T20:00:00+08:00").toISOString(),
+      endAt: new Date(startDate + "T21:30:00+08:00").toISOString(),
+    },
+  ]);
+  for (const privateText of [
+    emergencyTitle,
+    courseTitle,
+    taskTitle,
+    "浏览器短期目标",
+    "fingerprint",
+    "taskId",
+  ])
+    assert.ok(!JSON.stringify(data).includes(privateText));
+  assert.ok(
+    !(await teacher.page.locator("body").innerText()).includes(emergencyTitle),
+  );
+  await teacher.page.screenshot({
+    path: path.join(output, "team-busy-desktop.png"),
+    fullPage: true,
+  });
+  await emergencyArticle
+    .getByText("修改／删除这次日程", { exact: true })
+    .click();
+  await emergencyArticle.getByRole("checkbox").uncheck();
+  await write(
+    page,
+    emergencyArticle.getByRole("button", { name: "保存这次日程", exact: true }),
+  );
+  await teacher.page.reload();
+  data = await (await teacher.page.request.get(apiURL)).json();
+  assert.deepEqual(data.members.find((m) => m.id === student.id).periods, []);
+  await page
+    .getByRole("link", { name: "课表驱动项目：重新规划", exact: true })
+    .click();
+  await page.getByText(/正在按新日程重新规划/).waitFor();
+  assert.ok(await page.getByRole("checkbox").isChecked());
+  await page.locator('input[name="startDate"]').fill(startDate);
+  await page
+    .getByLabel("本期想推进的目标（可选）", { exact: true })
+    .fill("调整后的短期目标");
+  await write(
+    page,
+    page.getByRole("button", { name: "生成短期计划草案", exact: true }),
+  );
+  const [replacement] =
+    await sql`select * from personal_work_plans where replaces_plan_id=${plan.id} and status='draft'`;
+  assert.ok(replacement.items.length);
+  assert.ok(
+    replacement.items.every(
+      (b) =>
+        Date.parse(b.startAt) >= Date.parse(startDate + "T21:12:00+08:00") ||
+        Date.parse(b.endAt) <= Date.parse(startDate + "T20:22:00+08:00"),
+    ),
+  );
+  assert.equal(
+    (await sql`select status from personal_work_plans where id=${plan.id}`)[0]
+      .status,
+    "confirmed",
+  );
+  await write(
+    page,
+    page.getByRole("button", { name: "确认保存个人安排", exact: true }),
+  );
+  await page.waitForURL((url) => !url.searchParams.has("replan"));
+  assert.equal(new URL(page.url()).searchParams.has("replan"), false);
+  assert.equal(
+    (await sql`select status from personal_work_plans where id=${plan.id}`)[0]
+      .status,
+    "cancelled",
+  );
+  assert.equal(
+    (
+      await sql`select status from personal_work_plans where id=${replacement.id}`
+    )[0].status,
+    "confirmed",
+  );
+  assert.equal(
+    (await sql`select status from tasks where id=${taskId}`)[0].status,
+    "todo",
+  );
   const mobile = [];
   for (const width of [320, 390, 430]) {
     await page.setViewportSize({ width, height: 844 });
@@ -195,6 +340,7 @@ try {
       "/schedule",
       "/projects/" + projectId + "/personal-plan",
       "/projects/" + projectId + "/ai-drafts?scope=personal",
+      "/teams/" + teamId + "/availability",
     ]) {
       await page.goto(origin + route);
       assert.equal(
@@ -203,11 +349,13 @@ try {
         `Overflow ${route} ${width}`,
       );
       mobile.push({
-        page: route.includes("personal-plan")
-          ? "plan"
-          : route.includes("ai-drafts")
-            ? "ai"
-            : "schedule",
+        page: route.includes("availability")
+          ? "availability"
+          : route.includes("personal-plan")
+            ? "plan"
+            : route.includes("ai-drafts")
+              ? "ai"
+              : "schedule",
         width,
       });
       if (width === 390 && route === "/schedule")
@@ -222,9 +370,15 @@ try {
     page,
     page.getByRole("button", { name: "取消已确认安排", exact: true }),
   );
-  await page.getByText(/规则排程 · 已取消/).waitFor();
+  await page
+    .locator("article")
+    .filter({
+      has: page.getByRole("heading", { name: "调整后的短期目标", exact: true }),
+    })
+    .getByText(/规则排程 · 已取消/)
+    .waitFor();
   const cancelled = (
-    await sql`select status from personal_work_plans where id=${plan.id}`
+    await sql`select status from personal_work_plans where id=${replacement.id}`
   )[0].status;
   assert.equal(cancelled, "cancelled");
   const manager = await login(admin);
@@ -251,6 +405,7 @@ try {
     ).status(),
     404,
   );
+  assert.equal((await outsider.page.request.get(apiURL)).status(), 403);
   assert.deepEqual(pageErrors, []);
   const report = {
     importPreview: "passed",
@@ -263,6 +418,11 @@ try {
     sharedTasksUnchanged: "passed",
     privateData: "passed",
     otherTeamDenied: "passed",
+    emergencySupplement: "passed",
+    fuzzyBusyOnly: "passed",
+    teacherView: "passed",
+    sharingRevocation: "passed",
+    atomicReplanning: "passed",
     mobile,
     pageErrors,
   };
@@ -274,6 +434,7 @@ try {
   await context.close();
   await manager.context.close();
   await outsider.context.close();
+  await teacher.context.close();
 } finally {
   await browser.close();
   await sql.end();

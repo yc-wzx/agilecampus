@@ -4,7 +4,10 @@ import { notFound, redirect } from "next/navigation";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { getProjectForUser } from "@/lib/project";
-import { getPlanningWorkspace } from "@/lib/schedule/planner";
+import {
+  getPlanningWorkspace,
+  getReplanningSeed,
+} from "@/lib/schedule/planner";
 import { shanghaiDay } from "@/lib/schedule/types";
 import { ProjectNav } from "@/components/projects/project-nav";
 import {
@@ -32,6 +35,9 @@ export default async function Page({
   if (!z.uuid().safeParse(projectId).success) notFound();
   const access = await getProjectForUser(session.user.id, projectId);
   if (!access) notFound();
+  const seed = sp.replan
+    ? await getReplanningSeed(session.user.id, projectId, sp.replan)
+    : undefined;
   const startDate = shanghaiDay(),
     offset = Math.max(0, Number(sp.offset) || 0),
     workspace = await getPlanningWorkspace(session.user.id, projectId, {
@@ -56,7 +62,7 @@ export default async function Page({
         <ProjectNav projectId={projectId} current="ai" />
         <p className="text-sm text-ink-soft">
           结合本人课表、可投入时间和真实任务进度，生成未来 7／14
-          天工作草案。计划仅本人可见，确认后只保存个人安排。
+          天工作草案。完整计划仅本人可见；可以在日程设置中选择向团队显示模糊工作时段。
         </p>
         <div className="flex flex-wrap gap-3 text-sm">
           <Link href="/schedule" className="text-primary underline">
@@ -67,6 +73,13 @@ export default async function Page({
             className="text-primary underline"
           >
             返回 AI 助手
+          </Link>
+          <Link
+            prefetch={false}
+            href={`/teams/${access.project.teamId}/availability`}
+            className="text-primary underline"
+          >
+            团队忙碌日程
           </Link>
         </div>
       </header>
@@ -94,6 +107,7 @@ export default async function Page({
           total={workspace.candidateTotal}
           requestId={randomUUID()}
           aiAvailable={!!process.env.DEEPSEEK_API_KEY}
+          seed={seed}
         />
       ) : (
         <p className="text-sm text-ink-soft">
@@ -117,7 +131,7 @@ export default async function Page({
             </header>
             {plan.isStale && plan.status !== "cancelled" && (
               <p role="status" className="text-sm text-high">
-                课表、偏好、任务或其他安排已变化。本计划需要重新核对，取消后重新生成。
+                课表、偏好、任务或其他安排已变化。本计划需要重新核对，可按新日程重新规划。
               </p>
             )}
             {plan.warnings.map((w) => (
@@ -125,6 +139,11 @@ export default async function Page({
                 {w}
               </p>
             ))}
+            {plan.replacesPlanId && plan.status === "draft" && (
+              <p className="text-sm text-primary">
+                这是重新规划的草案，确认后会替换原安排；取消草案不会影响原安排。
+              </p>
+            )}
             <p className="text-sm">
               已安排 {plan.items.reduce((s, b) => s + b.minutes, 0)} 分钟；仍有{" "}
               {plan.unmet.reduce((s, b) => s + b.minutes, 0)}{" "}
@@ -177,7 +196,7 @@ export default async function Page({
             />
             <p className="text-xs text-ink-soft">
               草案 24
-              小时有效；确认时重新检查课表、任务版本和时间冲突。需要调整时，取消后修改工时、目标或日程再生成。
+              小时有效；确认时重新检查课表、任务版本和时间冲突。需要调整时，重新规划并核对剩余工时。
             </p>
           </article>
         ))}
