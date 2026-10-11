@@ -1,0 +1,99 @@
+name: Deploy prebuilt package to server
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_ip:
+        description: Server public IPv4
+        required: true
+        type: string
+      server_user:
+        description: SSH user with passwordless sudo
+        required: true
+        default: admin
+        type: string
+      host_fingerprint:
+        description: Verified ED25519 SHA256 host fingerprint
+        required: true
+        type: string
+      build_run_id:
+        description: Successful Linux deployment package build run ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: server-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      SERVER_IP: ${{ inputs.server_ip }}
+      SERVER_USER: ${{ inputs.server_user }}
+      EXPECTED_FINGERPRINT: ${{ inputs.host_fingerprint }}
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate destination and server identity
+        run: |
+          python3 - <<'PY'
+          import ipaddress, os, re
+          ipaddress.IPv4Address(os.environ['SERVER_IP'])
+          assert re.fullmatch(r'[a-z_][a-z0-9_-]*', os.environ['SERVER_USER'])
+          assert re.fullmatch(r'[0-9]+', os.environ['BUILD_RUN_ID'])
+          PY
+          ssh-keyscan -T 15 -t ed25519 "$SERVER_IP" > "$RUNNER_TEMP/agilecampus-known-hosts"
+          actual="$(ssh-keygen -lf "$RUNNER_TEMP/agilecampus-known-hosts" | awk '{print $2}')"
+          test "$actual" = "$EXPECTED_FINGERPRINT"
+          printf 'Server identity verified: %s\n' "$actual"
+      - name: Download and verify the selected build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir deploy-payload
+          gh run download "$BUILD_RUN_ID" -R "$GITHUB_REPOSITORY" --dir deploy-payload
+          # gh puts each artifact in its own directory when --name is absent.
+          package="$(find deploy-payload -name revision.txt -print)"
+          test "$(printf '%s\n' "$package" | wc -l)" -eq 1
+          test -f "$package"
+          dir="$(dirname "$package")"
+          (cd "$dir" && sha256sum -c SHA256SUMS)
+          cp "$dir/images.tar.gz" "$dir/revision.txt" "$dir/SHA256SUMS" "$RUNNER_TEMP/"
+      - name: Upload and deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.AGILECAMPUS_DEPLOY_SSH_KEY }}
+          PRODUCTION_ENV: ${{ secrets.AGILECAMPUS_PRODUCTION_ENV }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$PRODUCTION_ENV"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/agilecampus-key"
+          printf '%s\n' "$PRODUCTION_ENV" > "$RUNNER_TEMP/production.env"
+          options=(-i "$RUNNER_TEMP/agilecampus-key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/agilecampus-known-hosts" -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+          target="$SERVER_USER@$SERVER_IP"
+          ssh "${options[@]}" "$target" 'sudo -n true; umask 077; mkdir -p .agilecampus-deploy'
+          scp "${options[@]}" "$RUNNER_TEMP/images.tar.gz" "$RUNNER_TEMP/revision.txt" "$RUNNER_TEMP/SHA256SUMS" "$RUNNER_TEMP/production.env" scripts/deploy-server.sh "$target:.agilecampus-deploy/"
+          ssh "${options[@]}" "$target" 'sudo -n bash .agilecampus-deploy/deploy-server.sh'
+      - name: Check the public HTTPS endpoint
+        run: |
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent --show-error --max-time 8 "https://$SERVER_IP/api/health"; then
+              curl --fail --silent --show-error --max-time 15 "https://$SERVER_IP/login" > /dev/null
+              echo 'Public HTTPS health and login verified'
+              exit 0
+            fi
+            sleep 3
+          done
+          echo 'Application may be running internally, but public HTTPS verification failed'
+          exit 1
+      - name: Remove runner credential files
+        if: always()
+        run: rm -f "$RUNNER_TEMP/agilecampus-key" "$RUNNER_TEMP/production.env"
