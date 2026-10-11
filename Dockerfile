@@ -14,6 +14,8 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # next build 读 next.config 的 output:"standalone"，产出 .next/standalone
 RUN npm run build
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$SOURCE_REVISION
 
 # ---- runner：最小运行时，仅搬运 standalone + 静态资源 ----
 FROM node:22-alpine AS runner
@@ -22,6 +24,8 @@ ENV NODE_ENV=production
 # 监听全网卡，供容器外访问；端口可经 PORT 覆盖
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$SOURCE_REVISION
 
 # 非 root 运行
 RUN addgroup --system --gid 1001 nodejs \

@@ -23,6 +23,7 @@ vi.mock("node:child_process", () => ({
 const revision = "1234567890abcdef1234567890abcdef12345678";
 const previousRevision = "abcdef1234567890abcdef1234567890abcdef12";
 const currentTag = "agilecampus:release-1234567890ab";
+const migrationTag = "agilecampus:migrate-1234567890ab";
 const previousTag = "agilecampus:release-abcdef123456";
 const originalArgv = process.argv;
 const originalExitCode = process.exitCode;
@@ -107,6 +108,50 @@ function recordedRelease() {
 }
 
 describe("production operations orchestration (Docker processes simulated)", () => {
+  it("uses both matching prebuilt images without building and still backs up before migration", async () => {
+    mocks.spawnSync.mockImplementation((binary: string, args: string[]) => ({
+      status: 0,
+      stdout:
+        (binary === "git" && args[0] === "rev-parse") ||
+        (binary === "docker" && args[0] === "image")
+          ? revision
+          : "",
+    }));
+    await execute("release", "--prebuilt");
+    expect(process.exitCode).not.toBe(1);
+    const calls = mocks.spawnSync.mock.calls;
+    expect(calls.filter(([, args]) => args[0] === "image").map(([, args]) => args[2]))
+      .toEqual([currentTag, migrationTag]);
+    expect(calls.some(([, args]) => args.includes("build"))).toBe(false);
+    const migrationIndex = calls.findIndex(([, args]) => args.includes("run"));
+    expect(calls[migrationIndex][1]).toContain("--no-build");
+    expect(calls[migrationIndex][2].env.MIGRATE_IMAGE).toBe(migrationTag);
+    expect(mocks.spawn.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.spawnSync.mock.invocationCallOrder[migrationIndex],
+    );
+    expect(recordedRelease()).toMatchObject({ image: currentTag, migrationImage: migrationTag });
+  });
+
+  it.each(["missing app", "mismatched migration"])(
+    "rejects %s before any backup, migration or service stop",
+    async (failure) => {
+      mocks.spawnSync.mockImplementation((binary: string, args: string[]) => ({
+        status: failure === "missing app" && args[0] === "image" ? 1 : 0,
+        stdout:
+          binary === "git" && args[0] === "rev-parse"
+            ? revision
+            : args[0] === "image"
+              ? args[2] === migrationTag ? previousRevision : revision
+              : "",
+      }));
+      await execute("release", "--prebuilt");
+      expect(process.exitCode).toBe(1);
+      expect(mocks.spawn).not.toHaveBeenCalled();
+      expect(mocks.spawnSync.mock.calls.some(([, args]) => args.includes("stop") || args.includes("up") || args.includes("run"))).toBe(false);
+      expect(writes.size).toBe(0);
+    },
+  );
+
   it("builds a fresh release tag, preserves the prior image, backs up before migration and starts that exact tag", async () => {
     await execute("release");
     const docker = mocks.spawnSync.mock.calls.filter(
@@ -114,6 +159,8 @@ describe("production operations orchestration (Docker processes simulated)", () 
     );
     const build = docker.find(([, args]) => args.includes("build"));
     expect(build?.[2].env.APP_IMAGE).toBe(currentTag);
+    expect(build?.[2].env.MIGRATE_IMAGE).toBe(migrationTag);
+    expect(build?.[2].env.SOURCE_REVISION).toBe(revision);
     const up = docker.find(
       ([, args]) => args.includes("up") && args.includes("reminders"),
     );

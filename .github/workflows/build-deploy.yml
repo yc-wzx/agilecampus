@@ -1,0 +1,47 @@
+name: Build Linux deployment package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - package.json
+      - package-lock.json
+      - next.config.ts
+      - src/**
+      - public/**
+      - drizzle/**
+      - scripts/cron-runner.mjs
+      - .github/workflows/build-deploy.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build matching application and migration images
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          short="${REVISION:0:12}"
+          docker build --target builder --build-arg SOURCE_REVISION="$REVISION" -t "agilecampus:migrate-$short" .
+          docker build --target runner --build-arg SOURCE_REVISION="$REVISION" -t "agilecampus:release-$short" .
+          mkdir -p deployment-package
+          docker save "agilecampus:migrate-$short" "agilecampus:release-$short" | gzip > deployment-package/images.tar.gz
+          printf '%s\n' "$REVISION" > deployment-package/revision.txt
+          cd deployment-package
+          sha256sum images.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agilecampus-linux-${{ github.sha }}
+          path: deployment-package/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error

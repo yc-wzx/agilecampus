@@ -1,0 +1,29 @@
+# Optional override for the purchased 2-core / 2-GiB coursework server.
+# Enable SMALL_SERVER=true in .env. Build elsewhere; this is not a load-test result.
+services:
+  db:
+    mem_limit: 512m
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=40", "-c", "work_mem=4MB"]
+    logging: &rotated
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  app:
+    mem_limit: 768m
+    environment:
+      NODE_OPTIONS: --max-old-space-size=512
+    logging: *rotated
+  migrate:
+    mem_limit: 512m
+    environment:
+      NODE_OPTIONS: --max-old-space-size=384
+    logging: *rotated
+  reminders:
+    mem_limit: 64m
+    environment:
+      NODE_OPTIONS: --max-old-space-size=32
+    logging: *rotated
+  edge:
+    mem_limit: 128m
+    logging: *rotated

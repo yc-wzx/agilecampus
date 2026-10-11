@@ -1,0 +1,12 @@
+# Public IP certificates need an explicit public issuer and shortlived profile.
+# Keep /data persistent so Caddy can renew the certificate automatically.
+https://{$DOMAIN} {
+    tls {
+        issuer acme {
+            dir {$ACME_CA}
+            profile shortlived
+        }
+    }
+    encode zstd gzip
+    reverse_proxy app:3000
+}
