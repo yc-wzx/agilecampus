@@ -266,7 +266,7 @@ async function release() {
   run(["up", "-d", "--no-build", "app", "reminders"], { childEnv });
   await smoke();
   if (env.AGILECAMPUS_URL?.startsWith("https:"))
-    run(["--profile", "https", "up", "-d", "--no-deps", "edge"], { childEnv });
+    run(["--profile", "https", "up", "-d", "--no-deps", "--force-recreate", "edge"], { childEnv });
   fs.writeFileSync(
     marker,
     JSON.stringify(
