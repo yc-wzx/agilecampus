@@ -34,7 +34,7 @@ async function visit(route) {
   const response=await page.goto(origin+route);
   assert.equal(response.status(),200,route);
   assert(!page.url().includes('/login'),`Authenticated route ${route}`);
-  await page.locator('main').waitFor();
+  await page.locator('main').last().waitFor();
 }
 async function login() {
   await page.goto(origin+'/login');
