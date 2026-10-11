@@ -124,7 +124,11 @@ describe("production operations orchestration (Docker processes simulated)", () 
       .toEqual([currentTag, migrationTag]);
     expect(calls.some(([, args]) => args.includes("build"))).toBe(false);
     const migrationIndex = calls.findIndex(([, args]) => args.includes("run"));
-    expect(calls[migrationIndex][1]).toContain("--no-build");
+    expect(calls[migrationIndex][1]).toEqual(
+      expect.arrayContaining(["run", "--rm", "--pull", "never", "migrate"]),
+    );
+    expect(calls[migrationIndex][1]).not.toContain("--build");
+    expect(calls[migrationIndex][1]).not.toContain("--no-build");
     expect(calls[migrationIndex][2].env.MIGRATE_IMAGE).toBe(migrationTag);
     expect(mocks.spawn.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.spawnSync.mock.invocationCallOrder[migrationIndex],
