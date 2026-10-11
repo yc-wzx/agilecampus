@@ -21,7 +21,7 @@ done
 docker stats --no-stream --format '{{.Name}} {{.MemUsage}}'
 free -m
 df -h /opt
-"${compose[@]}" exec -T db psql -U agilecampus -d agilecampus -At -c "select 'migrations',count(*) from drizzle.__drizzle_migrations union all select 'users',count(*) from users union all select 'projects',count(*) from projects union all select 'tasks',count(*) from tasks"
+"${compose[@]}" exec -T db psql -U agilecampus -d agilecampus -At -c "select 'migrations',count(*) from drizzle.__drizzle_migrations union all select 'users',count(*) from users union all select 'projects',count(*) from projects union all select 'tasks',count(*) from tasks" </dev/null
 "${compose[@]}" logs --tail 25 edge reminders
 if test "$mode" = backup-drill; then
   dump="$("$node" scripts/ops.mjs backup)"
@@ -30,6 +30,6 @@ if test "$mode" = backup-drill; then
   restored="$("$node" -e 'const fs=require("fs");console.log(JSON.parse(fs.readFileSync(process.argv[1]+".restore.json","utf8")).database)' "$dump")"
   [[ "$restored" =~ ^agilecampus_restore_[0-9]+$ ]]
   # Delete only the independent database just created by this verification.
-  "${compose[@]}" exec -T db dropdb -U agilecampus "$restored"
+  "${compose[@]}" exec -T db dropdb -U agilecampus "$restored" </dev/null
   printf 'Backup and independent restore verified; production retained.\n'
 fi
