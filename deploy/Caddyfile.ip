@@ -1,5 +1,10 @@
 # Public IP certificates need an explicit public issuer and shortlived profile.
 # Keep /data persistent so Caddy can renew the certificate automatically.
+{
+	# Browsers omit SNI when the URL host is an IP address.
+	default_sni {$DOMAIN}
+}
+
 https://{$DOMAIN} {
     tls {
         issuer acme {

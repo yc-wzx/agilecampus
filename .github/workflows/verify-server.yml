@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: server-deployment
+  group: ${{ inputs.mode == 'status' && 'server-status' || 'server-deployment' }}
   cancel-in-progress: false
 
 jobs:

@@ -134,6 +134,7 @@ describe("production operations orchestration (Docker processes simulated)", () 
       mocks.spawnSync.mock.invocationCallOrder[migrationIndex],
     );
     expect(recordedRelease()).toMatchObject({ image: currentTag, migrationImage: migrationTag });
+    expect(calls.find(([, args]) => args.includes("edge"))?.[1]).toContain("--force-recreate");
   });
 
   it.each(["missing app", "mismatched migration"])(
