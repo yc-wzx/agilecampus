@@ -1,0 +1,38 @@
+name: Check server connectivity
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_ip:
+        description: Server public IPv4
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  connectivity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Check server ports from an independent network
+        env:
+          SERVER_IP: ${{ inputs.server_ip }}
+        run: |
+          python3 - <<'PY'
+          import ipaddress, os, socket, subprocess
+          address = str(ipaddress.IPv4Address(os.environ['SERVER_IP']))
+          for port in (22, 80, 443):
+              try:
+                  with socket.create_connection((address, port), timeout=8):
+                      print(f'{address}:{port} open', flush=True)
+              except OSError as error:
+                  print(f'{address}:{port} {type(error).__name__}', flush=True)
+          result = subprocess.run(['ssh-keyscan', '-T', '8', '-t', 'ed25519', address], capture_output=True, text=True)
+          if result.stdout.strip():
+              print('SSH host key:', flush=True)
+              print(result.stdout, flush=True)
+          else:
+              print('No public SSH host key returned', flush=True)
+          PY
