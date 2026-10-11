@@ -3,6 +3,7 @@
 set -euo pipefail
 test "$(id -u)" -eq 0
 upload="$(cd -- "$(dirname -- "$0")" && pwd)"
+trap 'rm -f -- "$upload/production.env"' EXIT
 app=/opt/agilecampus
 runtime=/opt/agilecampus-runtime
 revision="$(tr -d '\r\n' < "$upload/revision.txt")"

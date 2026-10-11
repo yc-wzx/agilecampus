@@ -262,7 +262,7 @@ async function release() {
   run(["up", "-d", "--wait", "db"]);
   await backup();
   if (old) run(["stop", "app", "reminders"]);
-  run(["run", "--rm", "--no-build", "migrate"], { childEnv });
+  run(["run", "--rm", "--pull", "never", "migrate"], { childEnv });
   run(["up", "-d", "--no-build", "app", "reminders"], { childEnv });
   await smoke();
   if (env.AGILECAMPUS_URL?.startsWith("https:"))
