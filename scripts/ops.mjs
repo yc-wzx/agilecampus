@@ -5,10 +5,13 @@ import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 import { once } from "node:events";
-import { parse } from "dotenv";
+import { parseEnv } from "node:util";
+import { isIP } from "node:net";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const envPath = path.join(root, ".env");
-const env = fs.existsSync(envPath) ? parse(fs.readFileSync(envPath)) : {};
+const env = fs.existsSync(envPath)
+  ? parseEnv(fs.readFileSync(envPath, "utf8").toString())
+  : {};
 const [operation, arg] = process.argv.slice(2);
 const prefix = [
   "compose",
@@ -17,6 +20,7 @@ const prefix = [
   "--file",
   "docker-compose.prod.yml",
 ];
+if (env.SMALL_SERVER === "true") prefix.push("--file", "docker-compose.2gb.yml");
 function run(args, { input, capture = false, childEnv = process.env } = {}) {
   const result = spawnSync("docker", [...prefix, ...args], {
     cwd: root,
@@ -70,6 +74,12 @@ function preflight() {
     );
   if (url.protocol === "https:" && env.DOMAIN !== url.hostname)
     throw Error("DOMAIN must equal the site hostname");
+  if (
+    url.protocol === "https:" &&
+    isIP(url.hostname) &&
+    env.CADDYFILE !== "./deploy/Caddyfile.ip"
+  )
+    throw Error("Public IP HTTPS requires CADDYFILE=./deploy/Caddyfile.ip");
   run(["config", "--quiet"]);
   console.log("Preflight passed (secrets suppressed)");
 }
@@ -216,6 +226,7 @@ async function smoke() {
   throw Error("Smoke checks failed; consult logs and rollback guide");
 }
 async function release() {
+  if (arg && arg !== "--prebuilt") throw Error("Use release or release --prebuilt");
   preflight();
   if (git(["status", "--porcelain", "--untracked-files=no"]))
     throw Error("Commit tracked changes before release");
@@ -225,14 +236,33 @@ async function release() {
     ? JSON.parse(fs.readFileSync(marker, "utf8"))
     : null;
   const tag = `agilecampus:release-${revision.slice(0, 12)}`;
-  const childEnv = { ...process.env, APP_IMAGE: tag };
+  const migrationTag = `agilecampus:migrate-${revision.slice(0, 12)}`;
+  const childEnv = {
+    ...process.env,
+    APP_IMAGE: tag,
+    MIGRATE_IMAGE: migrationTag,
+    SOURCE_REVISION: revision,
+  };
   // Build a unique release image before stopping the running application.
   // Never rebuild a previous successful tag supplied through .env.
-  run(["build", "app", "migrate"], { childEnv });
+  if (arg === "--prebuilt") {
+    // Validate both images before touching the live database/application.
+    for (const image of [tag, migrationTag]) {
+      const result = spawnSync(
+        "docker",
+        ["image", "inspect", image, "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}'],
+        { cwd: root, encoding: "utf8" },
+      );
+      if (result.status !== 0 || result.error || result.stdout?.trim() !== revision)
+        throw Error(`Missing or mismatched prebuilt image: ${image}`);
+    }
+  } else {
+    run(["build", "app", "migrate"], { childEnv });
+  }
   run(["up", "-d", "--wait", "db"]);
   await backup();
   if (old) run(["stop", "app", "reminders"]);
-  run(["run", "--rm", "migrate"]);
+  run(["run", "--rm", "--no-build", "migrate"], { childEnv });
   run(["up", "-d", "--no-build", "app", "reminders"], { childEnv });
   await smoke();
   if (env.AGILECAMPUS_URL?.startsWith("https:"))
@@ -243,6 +273,7 @@ async function release() {
       {
         revision,
         image: tag,
+        migrationImage: migrationTag,
         previousImage: old?.image ?? null,
         previousRevision: old?.revision ?? null,
         releasedAt: new Date().toISOString(),
@@ -325,7 +356,7 @@ try {
       break;
     default:
       throw Error(
-        "Usage: node scripts/ops.mjs preflight|backup|restore-drill <dump>|smoke|release|rollback <image>|status",
+        "Usage: node scripts/ops.mjs preflight|backup|restore-drill <dump>|smoke|release [--prebuilt]|rollback <image>|status",
       );
   }
 } catch (error) {

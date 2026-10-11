@@ -25,6 +25,8 @@ services:
     build:
       context: .
       target: builder
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     env_file: .env
     environment:
       # 覆盖 .env 的 localhost：容器内经服务名 db 连粮草
@@ -40,6 +42,8 @@ services:
     build:
       context: .
       target: runner
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     restart: unless-stopped
     env_file: .env
     environment:
@@ -72,14 +76,15 @@ services:
         condition: service_healthy
 
   edge:
-    image: caddy:2-alpine
+    image: caddy:2.11.7-alpine
     profiles: ["https"]
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN:-localhost}
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
     ports: ["80:80", "443:443"]
     volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${CADDYFILE:-./deploy/Caddyfile}:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

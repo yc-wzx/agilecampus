@@ -1,14 +1,47 @@
 # 唯笃队 AgileCampus：阿里云部署与恢复方案
 
-当前交付对象是 **AgileCampus 应用网站**。腾讯文档团队项目主页继续独立使用。服务器尚未购买，本文件提供部署代码和操作步骤，公网可达性、容器运行、飞书真实送达及真实 AI 调用均须在目标环境补验。
+当前交付对象是 **AgileCampus 应用网站**。腾讯文档团队项目主页继续独立使用。团队已购买香港轻量应用服务器：Ubuntu 24.04、2 核 2 GiB、40 GiB，尚无域名。公网可达性、容器运行、飞书真实送达及真实 AI 调用均须在目标环境补验，准备好配置不等于部署已经成功。
 
 ## 1. 租什么、准备什么
 
-建议初期使用一台 Linux 服务器：Ubuntu 24.04 LTS、至少 2 核 4 GiB、40 GiB SSD、公网 IP。该规格是本项目部署预算建议，不是经过压力测试的容量承诺；人数增加后以 CPU、内存和请求耗时决定扩容。轻量应用服务器或 ECS 均可，购买时核对带宽、流量额度、续费价和备案资格，不必同时购买云数据库。本版 PostgreSQL 16 与网站放在同一台机器。
+本次按已购买的 2 核 2 GiB 服务器部署网站与 PostgreSQL 16，不另买云数据库。设置 `SMALL_SERVER=true` 启用 `docker-compose.2gb.yml`：限制应用、数据库及后台进程内存，并轮转容器日志。应用的 JavaScript 堆上限为 512 MiB；容器上限还包含原生内存。此配置是课程展示的起点，不是经过压力测试的容量承诺，人数增加后以 CPU、内存和请求耗时决定是否扩容。
 
 阿里云的 Docker 部署说明支持 Ubuntu 24.04，详见 [ECS 部署业务代码](https://help.aliyun.com/zh/ecs/user-guide/deploy-applications)。大陆服务器通过域名对外提供网站服务时，先完成域名实名和备案，详见 [阿里云备案流程](https://help.aliyun.com/zh/icp-filing/basic-icp-service/user-guide/icp-filing-application-overview)。公网访问结果须实际从老师和同学的普通网络验证。
 
-服务器安装 Git、Node.js 22 或以上、Docker Engine、Compose v2 插件。按 [Docker 的 Ubuntu 安装说明](https://docs.docker.com/engine/install/ubuntu/)安装，使用 SSH 密钥登录。安全组开放 80、443，SSH 22 限制为维护人员 IP；不开放 PostgreSQL 5432。3080 只绑定服务器本机。
+服务器安装 Git、Node.js 22 或以上、Docker Engine、Compose v2 插件。按 [Docker 的 Ubuntu 安装说明](https://docs.docker.com/engine/install/ubuntu/)安装，使用 SSH 密钥登录。防火墙开放 80、443，SSH 22 限制为维护人员 IP；不开放 PostgreSQL 5432。3080 只绑定服务器本机。**2 GiB 服务器不执行 `next build`，使用下面的预构建发布方式。**
+
+### 1.1 没有域名：公网 IPv4 与 HTTPS
+
+无需为这次展示额外购买域名。Let's Encrypt 已开放公网 IP 证书，要求 `shortlived` 配置，证书有效期为 160 小时，见[官方公告](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability)。仓库提供单独的 `deploy/Caddyfile.ip`，显式使用公共 ACME 签发方与该配置；默认 Caddy 的 IP 自签证书不能当作老师普通浏览器可直接访问的交付。
+
+在 `.env` 中设置：
+
+```dotenv
+AGILECAMPUS_URL=https://你的公网IPv4
+AUTH_URL=https://你的公网IPv4
+DOMAIN=你的公网IPv4
+CADDYFILE=./deploy/Caddyfile.ip
+SMALL_SERVER=true
+```
+
+80、443 必须从公网可达。先使用 `ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory` 检查验证流程；测试签发方的证书不受浏览器信任。正式发布改回 `ACME_CA=https://acme-v02.api.letsencrypt.org/directory`，重新创建 edge 容器并验证证书。Caddy 的 `/data` 卷须保留，服务须持续运行以自动续期；只有普通浏览器和真实网络验证通过后，才把 HTTPS IP 地址发给老师。
+
+日后购买域名，将 DOMAIN 与两个 URL 改为实际域名，将 CADDYFILE 改回 `./deploy/Caddyfile`，重新创建 app、reminders、edge；数据库保留。飞书登录等外部平台的回调域名要求另行核验，不保证接受 IP。
+
+### 1.2 构建后上传，避免占用服务器内存
+
+GitHub 仓库的 Actions 中运行 **Build Linux deployment package**，或合并影响构建的代码到 master 后等待自动构建。该流程在 Linux 构建应用和迁移镜像，生成 `images.tar.gz`、`revision.txt`、`SHA256SUMS`，保留 7 天，不包含 `.env`。下载部署包，解压并通过 SSH 上传到服务器私有目录。使用 Windows `next build` 的原生依赖直接打包到 Linux 不可靠，请使用此 Linux 产物。
+
+服务器切换到 `revision.txt` 记录的完整提交号，再执行：
+
+```bash
+sha256sum -c SHA256SUMS
+docker load -i images.tar.gz
+cd /你的路径/agilecampus
+node scripts/ops.mjs release --prebuilt
+```
+
+`release --prebuilt` 在备份或修改运行服务前，核对两个镜像的提交标签与当前 Git 提交一致；缺少镜像或版本不符就终止。随后仍执行健康等待、备份、版本化迁移和应用检查，不在服务器重新构建。`scripts/ops.mjs` 使用 Node 内置环境文件解析器，本模式无需为了运行发布脚本而在宿主安装整个 `node_modules`。
 
 ## 2. 首次发布
 
@@ -18,7 +51,6 @@
 git clone https://github.com/yc-wzx/agilecampus.git
 cd agilecampus
 git checkout master
-npm ci
 cp deploy/production.env.example .env
 chmod 600 .env
 ```
@@ -33,7 +65,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 ```bash
 node scripts/ops.mjs preflight
-node scripts/ops.mjs release
+node scripts/ops.mjs release --prebuilt
 node scripts/ops.mjs status
 node scripts/ops.mjs smoke
 ```
@@ -42,7 +74,7 @@ node scripts/ops.mjs smoke
 
 网页在 `/register` 注册新账号，再创建团队、邀请同学加入。不放公开默认管理员密码。首次公网验收：登录 → 创建项目 → 建任务并指派 → 入轮 → 开始/结束迭代 → 提交成果 → 教师反馈 → 修改重交；另用项目外账号检查无权访问。
 
-如果暂时没有可用域名，只做本机验证：`.env` 地址设为 `http://localhost:3080`，通过 SSH 隧道 `ssh -L 3080:127.0.0.1:3080 部署账号@服务器IP` 访问。这不算老师可直接访问的公网交付。
+如果公网 IP 证书尚未签发成功，先做本机验证：`.env` 地址设为 `http://localhost:3080`，通过 SSH 隧道 `ssh -L 3080:127.0.0.1:3080 部署账号@服务器IP` 访问。这不算老师可直接访问的公网交付。
 
 ## 3. 升级与旧数据库
 
